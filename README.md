@@ -37,7 +37,7 @@ The code uploaded to the repository is an accompaniment to the MSc report briefl
 4. `conda activate soen_env`
 5. `pip install -r requirements.txt`
 
-That should get the code downloaded and conda evironment set up. Then, the `main.py` application can be run:
+That should get the code downloaded and conda evironment set up. Then, the `main.py` application can be run inside a terminal:
 
 1. `python main.py` - this will pop up a window to train models on the MNIST dataset
 - To change the models that are generated when opening the GUI, go to `model_config_files/mnist_config.py`
