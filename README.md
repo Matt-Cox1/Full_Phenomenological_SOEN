@@ -23,4 +23,7 @@ This study focuses on four primary objectives:
 - Investigation of SOEN dynamics, including an exploration of the effects of noise on SOENs.
 - The derivation and evaluation of a SOEN-specific energy function.
 
-The thesis is organised into several chapters. Following this introduction, the theoretical foundations of SOENs and the learning algorithms applied to them are presented. In the methodology chapter, the implementation of the simulation environment, and the experimental procedures for applying BPTT and EqProp learning algorithms are detailed. Lastly, the results of this project are presented and analysed followed by a discussion of their implications and limitations.
+
+### The Repo
+
+The code uploaded to the repository is an accompaniment to the MSc report briefly introduced above. In this repository, most of the code necessary to perform the experiments mentioned in the report can be run, and the figures re-produced. There is also an introductory notebook called `Network_Creation_and_Dynamics.ipynb` that provides a tutorial for using this PyTorch implementation of the full phenomenological model of SOENs.
