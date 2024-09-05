@@ -1,8 +1,8 @@
 # Phenomenological Model of Superconducting Optoelectronic Networks
 
-##### **Institution**: University College London
+#### **Institution**: University College London
 
-##### **Student**: Matthew Cox
+#### **Student**: Matthew Cox
 
-##### **MSc**: Machine Learning
+#### **MSc**: Machine Learning
 
