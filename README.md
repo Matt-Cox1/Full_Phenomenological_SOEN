@@ -27,3 +27,17 @@ This thesis focuses on four primary objectives:
 ### The Repo
 
 The code uploaded to the repository is an accompaniment to the MSc report briefly introduced above. In this repository, most of the code necessary to perform the experiments mentioned in the report can be run, and the figures re-produced. There is also an introductory notebook called `Network_Creation_and_Dynamics.ipynb` that provides a tutorial for using this PyTorch implementation of the full phenomenological model of SOENs.
+
+
+#### Usage:
+
+1. `git clone https://github.com/Matt-Cox1/Full_Phenomenological_SOEN.git`
+2. `cd Full_Phenomenological_SOEN`
+3. `conda create --name soen_env python=3.9`
+4. `conda activate soen_env`
+5. `pip install -r requirements.txt`
+
+That should get the code downloaded and conda evironment set up. Then, the `main.py` application can be run:
+
+1. `python main.py` - this will pop up a window to train models on the MNIST dataset
+- To change the models that are generated when opening the GUI, go to `model_config_files/mnist_config.py`
