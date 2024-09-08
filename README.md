@@ -41,3 +41,10 @@ That should get the code downloaded and conda evironment set up. Then, the `main
 
 1. `python main.py` - this will pop up a window to train models on the MNIST dataset
 - To change the models that are generated when opening the GUI, go to `model_config_files/mnist_config.py`
+
+
+---
+
+As referred to in the report, the NN-dendrite can smoothly interpolate in between bias currents. The below animation demonstrates this better than what could be dont in the paper:
+
+![Activation Function Animation](activation_function_animation.gif)
