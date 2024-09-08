@@ -45,6 +45,6 @@ That should get the code downloaded and conda evironment set up. Then, the `main
 
 ---
 
-As referred to in the report, the NN-dendrite can smoothly interpolate in between bias currents. The below animation demonstrates this better than what could be dont in the paper:
+As referred to in the report, the NN-dendrite can smoothly interpolate in between bias currents. The original data had only $15$ unique bias currents, this neural network approxiateion extends this discrete data to be continuous, so we can access the source function at any bias current. The below animation demonstrates this better than what could be dont in the paper:
 
 ![Activation Function Animation](activation_function_animation.gif)
