@@ -42,6 +42,7 @@ That should get the code downloaded and conda evironment set up. Then, the `main
 1. `python main.py` - this will pop up a window to train models on the MNIST dataset
 - To change the models that are generated when opening the GUI, go to `model_config_files/mnist_config.py`
 
+Whenever you get an error regarding mps device or cuda device incompatability, simply go into the model config and set `device='cpu'` or `device='cuda'` if you have a CUDA-enabled NVIDIA graphics card.
 
 ---
 
