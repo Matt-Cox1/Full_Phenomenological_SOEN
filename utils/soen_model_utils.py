@@ -30,6 +30,7 @@ from model.soen_model import *
 
 from matplotlib.patches import Rectangle
 from matplotlib.legend import Legend
+
 def visualise_soen_network(
     model: 'SOENModel',
     dpi: int = 300,
@@ -72,8 +73,8 @@ def visualise_soen_network(
     all_nodes = input_nodes + hidden_nodes + output_nodes
     for i, from_node in enumerate(all_nodes):
         for j, to_node in enumerate(all_nodes):
-            if abs(J_masked[j, i]) > edge_threshold:
-                G.add_edge(from_node, to_node, weight=abs(J_masked[j, i]), sign=np.sign(J_masked[j, i]))
+            if abs(J_masked[i, j]) > edge_threshold:  # Changed from [j,i] to [i,j]
+                G.add_edge(from_node, to_node, weight=abs(J_masked[i, j]), sign=np.sign(J_masked[i, j]))
 
     # Create the figure
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)

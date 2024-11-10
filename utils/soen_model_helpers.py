@@ -6,11 +6,6 @@ import numpy as np
 import random
 
 
-
-
-
-
-
 def update_state(s, phi, g, gamma, tau, dt, clip_state):
     g_value = g(phi, s)
     ds = gamma * g_value.detach() + (g_value - g_value.detach()) - s / tau
@@ -19,8 +14,6 @@ def update_state(s, phi, g, gamma, tau, dt, clip_state):
     else:
         s = s + dt * ds
     return s
-
-
 
 
 class RateNN(nn.Module):
@@ -48,69 +41,51 @@ class RateNN(nn.Module):
 
 
 class NNDendriteWrapper:
-    """
-    This is a wrapper class for the above RateNN class. The idea behind it, is we want the neural network to act just
-    like a frozen plug and play type function, just like the gaussian or sigmoid mixture functions. So we need to freeze all
-    potentially learnable parameters, process the inputs into a form we trained the model on, and then pass it through the
-    network.
-    """
     def __init__(self, model_path, i_b):
         self.nn_model = RateNN()
         self.nn_model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
         self.nn_model.eval()  
         self.i_b = i_b
-        
+            
         for param in self.nn_model.parameters():
             param.requires_grad = False
-        
+            
         self.periodic_function = make_periodic(self._original_call)
-
+    
     def to(self, device):
         self.nn_model = self.nn_model.to(device)
+        self.i_b = self.i_b.to(device)
         return self
-
-    def _original_call(self, phi, s):
+    
+    def _original_call(self, phi, s, i_b_relevant):
+        # Ensure all inputs are on the same device
         device = phi.device
-        i_b_tensor = torch.full_like(s, self.i_b, device=device) # if we ever want each node to have a different i_b the this needs to change
-        input_data = torch.stack((s, phi.abs(), i_b_tensor), dim=-1)
-        output = self.nn_model(input_data)
-        result = output.squeeze(-1).clamp(min=0, max=1) # this step might not be needed but just in case
-        return result
+        s = s.to(device)
+        i_b_relevant = i_b_relevant.to(device)
 
-    def __call__(self, phi, s):
-        return self.periodic_function(phi, s)
+        # Ensure all inputs are the same shape
+        # Inputs are (batch_size, num_relevant_nodes)
+        # Stack along the last dimension to create input of shape (batch_size, num_relevant_nodes, 3)
+        input_data = torch.stack((s, phi.abs(), i_b_relevant), dim=-1)
+        # Reshape to (batch_size * num_relevant_nodes, 3) for the model
+        input_data = input_data.view(-1, 3)
+        output = self.nn_model(input_data)
+        # Reshape back to (batch_size, num_relevant_nodes)
+        result = output.view(s.shape).clamp(min=0, max=1)
+        return result
+    
+    def __call__(self, phi, s, i_b_relevant):
+        return self.periodic_function(phi, s, i_b_relevant)
+
+
 
 def make_periodic(g_function):
-    """
-    The source function reduces down to the region s=0 to s=1, and phi=0 to phi=0.5, and then becomes periodic in
-    phi with a period of 1 and a reflection about phi=0.5.
-    This function wraps around whatever source function (activation function) we chose to feed it and outputs another
-    function that is periodic in phi.
-
-
-    The make_periodic function is designed to take any given function g_function and transform 
-    it into a new function that is periodic in the variable phi. 
-    This means that the new function will repeat its values in a regular pattern over intervals of phi.
-    """
-
     def periodic_g(phi, s, *args, **kwargs):
-        
-        # reflecting about phi=0
-        phi_abs = torch.abs(phi)
-        
-        # restricting phi to live in \[0, 1) range (using the modulo operator)
-        #  For example, phi=1.2 becomes 0.2
-        phi_shifted = torch.fmod(phi_abs, 1.0)
-        
-        # Reflection: boolean mask for wherever phi_shifted is less than or equal to 0.5 
-        mask = phi_shifted <= 0.5
-        
-        # apply the function or its reflection based on the mask
-        phi_periodic = torch.where(mask, phi_shifted, 1 - phi_shifted)
-        
-        return g_function(phi_periodic, s, *args, **kwargs)
-    
+        # Ensure phi is within [-0.5, 0.5]
+        phi = torch.remainder(phi + 0.5, 1.0) - 0.5
+        return g_function(phi.abs(), s, *args, **kwargs)
     return periodic_g
+
 
 
 def initialise_state(batch_size, num_total, initial_state, device, clip_state):
@@ -145,7 +120,7 @@ def apply_input(s, x, input_nodes, input_type, is_input_time_varying, time_step=
     return None
 
 def calculate_phi(s, J_masked, flux_offset, external_flux=None):
-    phi = torch.mm(s, J_masked.t()) + flux_offset
+    phi = torch.mm(s, J_masked) + flux_offset 
     if external_flux is not None:
         phi += external_flux
     return phi
