@@ -33,7 +33,7 @@ The code uploaded to the repository is an accompaniment to the MSc report briefl
 
 1. `git clone https://github.com/Matt-Cox1/Full_Phenomenological_SOEN.git`
 2. `cd Full_Phenomenological_SOEN`
-3. `conda create --name soen_env python=3.9`
+3. `conda create --name soen_env python=3.11`
 4. `conda activate soen_env`
 5. `pip install -r requirements.txt`
 
