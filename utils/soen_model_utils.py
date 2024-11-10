@@ -31,6 +31,8 @@ from model.soen_model import *
 from matplotlib.patches import Rectangle
 from matplotlib.legend import Legend
 
+
+
 def visualise_soen_network(
     model: 'SOENModel',
     dpi: int = 300,
@@ -172,6 +174,8 @@ def visualise_soen_network(
 
     # plt.tight_layout()
     plt.show()
+
+
 
 
 
