@@ -85,7 +85,7 @@ class SOENConfig:
 
 
     activation_function: Literal["tanh_1d","tanh_2d" "NN_dendrite","relu_1d","relu_2d","gaussian_mixture","sigmoid_mixture"] = "gaussian_mixture"
-    nn_dendrite_model_path: str = "/Users/matthewcox/Documents/UCL/MSc/Training_Apps/Application/experiments/source_functions/trained_models/64_hidden_units/64_trained_NN_dendrite.pth"
+    nn_dendrite_model_path: str = "experiments/source_functions/trained_models/64_hidden_units/64_trained_NN_dendrite.pth"
     
 
     # The 2 proposed in the report are the energy_soen_local and energy_soen_global
