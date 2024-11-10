@@ -26,7 +26,6 @@ from copy import deepcopy # to make a separate copy of the config file so we don
 
 torch.manual_seed(42)
 np.random.seed(42)
-# note: I specifically did not set random's seed. The random module is used to temporarily un-set the torch seed when initialising random model parameters
 
 
 
@@ -34,64 +33,122 @@ class SOENModel(nn.Module):
     def __init__(self, config: SOENConfig):
         super(SOENModel, self).__init__()
         
-        self.logger = logging.getLogger(self.__class__.__name__) # set the logger to the class name, so we can see which class is logging what
-        self.logger.setLevel(logging.DEBUG) # set the logger to the debug level so we can see everything
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger.setLevel(logging.DEBUG)
 
-
-        # to avoid writing over config variables, we make a deep copy of the config file
         self.config = deepcopy(config)
         self.device = torch.device(config.device)
-        self._initialise_network_parameters() # things like: dt, max_iter, tol, etc
-        self._initialise_network_structure() # num_input, num_hidden, num_output, etc
-        self._initialise_model_parameters() # J, gamma, tau, etc
-        self.to(self.device) 
         
+        self._initialise_network_structure()
+        self._initialise_network_parameters()
         
-        
-        # list the activation functions that can be used, as found in the activation_functions.py file
-        self.activation_functions = {
-            "tanh_2d": tanh_2d,
-            "relu_2d": relu_2d,
-            "gaussian_mixture": gaussian_mixture,
-            "sigmoid_mixture": sigmoid_mixture,
-            "NN_dendrite": None,
-            "tanh_1d": tanh_1d,
-            "relu_1d": relu_1d,}
 
-        self._initialise_nn_dendrite() # this makes the nn_dendrite a callable function not to be learned
+        self.activation_function_indices = nn.Parameter(
+            torch.zeros(self.num_total, dtype=torch.long),
+            requires_grad=False
+        )
         
-        
+        self._initialise_model_parameters()
+        self._setup_activation_functions()
+        self.activation_function_map = {i: func_name for i, func_name in enumerate(self.config.activation_functions)}
         
         if self.bias_flux_offsets:
             self.set_initial_flux_offset()
         
-        # For every source function, we want to make it periodic
-        for key in self.activation_functions:
-            if self.activation_functions[key] is not None:
-                self.activation_functions[key] = make_periodic(self.activation_functions[key])
-        
-        
         self.state_evolution = None
         self.energy_evolution = None if not self.track_energy else []
-    
+
+        self.to(self.device)
+
+    def _setup_activation_functions(self):
+        self.activation_functions = {}
+        for func_name in self.config.activation_functions:
+            if func_name == "NN_dendrite":
+                self._initialise_nn_dendrite()
+                self.activation_functions[func_name] = self.nn_dendrite_wrapper
+            else:
+                self.activation_functions[func_name] = make_periodic(globals()[func_name])
+
     def _initialise_nn_dendrite(self):
-        # if the activation function as specified in the config file is the neural network
-        # dendrite, then we need to initialise the neural network dendrite wrapper
-        if self.config.activation_function == "NN_dendrite":
-            self.nn_dendrite_wrapper = NNDendriteWrapper(
-                self.config.nn_dendrite_model_path, 
-                self.i_b
-            ).to(self.device)
-            self.activation_functions["NN_dendrite"] = self.nn_dendrite_wrapper
+        self.nn_dendrite_wrapper = NNDendriteWrapper(
+            self.config.nn_dendrite_model_path, 
+            self.i_b
+        ).to(self.device)
+
+
+    def _get_nn_dendrite_function(self):
+        # if we have not already initialised the NN-dendrite then do so now: 
+        if not hasattr(self, 'nn_dendrite_wrapper'):
+            self._initialise_nn_dendrite()
+        return self.nn_dendrite_wrapper
 
     def g(self, phi, s):
-        return self.activation_functions[self.config.activation_function](phi, s)
-    
+        # Ensure inputs are 2D tensors (batch_size x num_nodes)
+        if phi.dim() == 1:
+            phi = phi.unsqueeze(0)  # Add batch dimension if not present
+            s = s.unsqueeze(0)      # Do the same for s
+        
+        # Get dimensions of input
+        batch_size, num_nodes = phi.shape
+        
+        # Initialize result tensor with same shape and type as phi
+        result = torch.zeros_like(phi)
+        
+        # Iterate through all activation functions defined in the config
+        for func_index, func_name in enumerate(self.config.activation_functions):
+            # Get node indices for nodes using this activation function
+            node_indices = torch.where(self.activation_function_indices == func_index)[0] # the 0th index returns the indices where the condition was true
+            
+            if len(node_indices) == 0:
+                continue  # No nodes with this activation function
+            
+            # Get the actual activation function
+            func = self.activation_functions[func_name]
+            
+            # Get phi and s for relevant nodes
+            phi_relevant = phi[:, node_indices]  # shape (batch_size, num_relevant_nodes)
+            s_relevant = s[:, node_indices]      # shape (batch_size, num_relevant_nodes)
+            
+            # Special handling for "NN_dendrite" activation
+            if func_name == "NN_dendrite":
+                i_b_relevant = self.i_b[node_indices]  # shape (num_relevant_nodes,)
+                i_b_relevant = i_b_relevant.unsqueeze(0).expand(batch_size, -1)
+                # Apply activation function with bias
+                result_relevant = func(phi_relevant, s_relevant, i_b_relevant)
+            else:
+                # Apply regular activation function
+                result_relevant = func(phi_relevant, s_relevant)
+            
+            # Assign results back to result tensor
+            result[:, node_indices] = result_relevant
+        
+        # Remove batch dimension if input was 1D
+        return result.squeeze(0) if batch_size == 1 else result
 
-    def set_activation_function(self, activation_function):
-        self.config.activation_function = activation_function
-        if activation_function == "NN_dendrite":
+
+    def set_activation_function(self, node_indices, function_name):
+        if function_name not in self.config.activation_functions:
+            raise ValueError(f"Unknown activation function: {function_name}")
+        function_index = self.config.activation_functions.index(function_name)
+        self.activation_function_indices.data[node_indices] = function_index
+        if function_name == "NN_dendrite" and self.activation_functions["NN_dendrite"] is None:
             self._initialise_nn_dendrite()
+   
+
+    def get_activation_function(self, node_index):
+        """
+        Get the activation function for a specific node.
+        
+        Args:
+        node_index (int): Index of the node
+        
+        Returns:
+        function: The activation function for the specified node
+        """
+        index = self.activation_function_indices[node_index].item()
+        return self.activation_function_map[index]
+
+
 
             
     def to(self, device):
@@ -161,8 +218,10 @@ class SOENModel(nn.Module):
         torch.manual_seed(42)
 
         self.flux_offset = nn.Parameter(torch.zeros(self.num_total))
-        self.i_b = torch.tensor(1.7)
+        # self.i_b = torch.tensor(1.7)
+        self.i_b = nn.Parameter(torch.full((self.num_total,), 1.7))
 
+    
         self._apply_mask_to_parameters()
         self._set_parameter_gradients()
         
@@ -195,159 +254,59 @@ class SOENModel(nn.Module):
     
 
 
-    # def _create_connection_mask(self):
-    #     """
-    #     Create a mask for connections in the SOEN network.
-        
-    #     Logic:
-    #     1. Initialise a zero tensor for the mask
-    #     2. Create separate masks for each layer and connection type
-    #     3. Ensure bidirectional connections are consistent
-    #     4. Apply connection probabilities to each mask
-    #     5. Combine all masks into the final mask
-    #     6. Apply self-connection rule
-    #     7. Enforce symmetry if required
-    #     """
-        
-    #     # Initialise mask with zeros
-    #     mask = torch.zeros(self.num_total, self.num_total)
-        
-    #     # Clamp all probabilities to [0, 1] range
-    #     p_input_hidden = torch.clamp(torch.tensor(self.config.p_input_hidden), 0, 1).item()
-    #     p_hidden_output = torch.clamp(torch.tensor(self.config.p_hidden_output), 0, 1).item()
-    #     p_input_input = torch.clamp(torch.tensor(self.config.p_input_input), 0, 1).item()
-    #     p_hidden_hidden = torch.clamp(torch.tensor(self.config.p_hidden_hidden), 0, 1).item()
-    #     p_output_output = torch.clamp(torch.tensor(self.config.p_output_output), 0, 1).item()
-    #     p_skip_connections = torch.clamp(torch.tensor(self.config.p_skip_connections), 0, 1).item()
-        
-    #     # Input to Hidden connections
-    #     input_hidden_mask = torch.zeros(self.num_hidden, self.num_input)
-    #     input_hidden_mask.bernoulli_(p_input_hidden)
-    #     mask[self.num_input:self.num_input+self.num_hidden, :self.num_input] = input_hidden_mask
-        
-    #     # Ensure bidirectional consistency for input-hidden connections
-    #     if self.config.allow_hidden_to_input_feedback:
-    #         mask[:self.num_input, self.num_input:self.num_input+self.num_hidden] = input_hidden_mask.t()
-        
-    #     # Hidden to Output connections
-    #     if self.num_output > 0:
-    #         hidden_output_mask = torch.zeros(self.num_output, self.num_hidden)
-    #         hidden_output_mask.bernoulli_(p_hidden_output)
-    #         mask[self.num_input+self.num_hidden:, self.num_input:self.num_input+self.num_hidden] = hidden_output_mask
-            
-    #         # Ensure bidirectional consistency for hidden-output connections
-    #         if self.config.allow_output_to_hidden_feedback:
-    #             mask[self.num_input:self.num_input+self.num_hidden, self.num_input+self.num_hidden:] = hidden_output_mask.t()
-        
-    #     # Input to Input connections
-    #     if p_input_input > 0:
-    #         input_input_mask = torch.zeros(self.num_input, self.num_input)
-    #         input_input_mask.bernoulli_(p_input_input)
-    #         mask[:self.num_input, :self.num_input] = input_input_mask
-        
-    #     # Hidden to Hidden connections
-    #     if p_hidden_hidden > 0:
-    #         hidden_hidden_mask = torch.zeros(self.num_hidden, self.num_hidden)
-    #         hidden_hidden_mask.bernoulli_(p_hidden_hidden)
-    #         mask[self.num_input:self.num_input+self.num_hidden, self.num_input:self.num_input+self.num_hidden] = hidden_hidden_mask
-        
-    #     # Output to Output connections
-    #     if p_output_output > 0 and self.num_output > 0:
-    #         output_output_mask = torch.zeros(self.num_output, self.num_output)
-    #         output_output_mask.bernoulli_(p_output_output)
-    #         mask[self.num_input+self.num_hidden:, self.num_input+self.num_hidden:] = output_output_mask
-        
-    #     # Skip connections (Input to Output)
-    #     if self.config.allow_skip_connections and self.num_output > 0:
-    #         skip_mask = torch.zeros(self.num_output, self.num_input)
-    #         skip_mask.bernoulli_(p_skip_connections)
-    #         mask[self.num_input+self.num_hidden:, :self.num_input] = skip_mask
-    #         mask[:self.num_input, self.num_input+self.num_hidden:] = skip_mask.t()
-        
-    #     # Remove self-connections if not allowed
-    #     if not self.config.allow_self_connections:
-    #         mask.diagonal().zero_()
-        
-    #     # Enforce symmetry if required
-    #     if self.config.enforce_symmetric_weights:
-    #         mask = torch.max(mask, mask.t())
-        
-    #     self.register_buffer('mask', mask)
-
-
     def _create_connection_mask(self):
-        """
-        Create a mask for connections in the SOEN network using either power law or Bernoulli distribution.
-        """
         mask = torch.zeros(self.num_total, self.num_total)
         
-        def create_mask(rows, cols, density, distribution='bernoulli'):
+        def create_mask(from_nodes, to_nodes, density, distribution='bernoulli'):
             if distribution == 'power_law':
-                alpha = 1.1 # this is a steepness of the power law distribution
-                return self._create_power_law_mask(rows, cols, density,alpha)
-            else:  # default to Bernoulli
-                return torch.bernoulli(torch.full((rows, cols), density, dtype=torch.float32))
+                alpha = 1.1 
+                return self._create_power_law_mask(from_nodes, to_nodes, density, alpha)
+            else:
+                return torch.bernoulli(torch.full((from_nodes, to_nodes), density, dtype=torch.float32))
 
-
-        # Input to Hidden connections
-        input_hidden_mask = create_mask(self.num_hidden, self.num_input, self.config.p_input_hidden, self.config.mask_distribution)
-        mask[self.num_input:self.num_input+self.num_hidden, :self.num_input] = input_hidden_mask
+        # Input -> Hidden (FROM inputs TO hidden)
+        input_hidden_mask = create_mask(self.num_input, self.num_hidden, self.config.p_input_hidden, self.config.mask_distribution)
+        mask[:self.num_input, self.num_input:self.num_input+self.num_hidden] = input_hidden_mask
         
-        # Ensure bidirectional consistency for input-hidden connections
-        if self.config.allow_hidden_to_input_feedback:
-            mask[:self.num_input, self.num_input:self.num_input+self.num_hidden] = input_hidden_mask.t()
-        
-        # Hidden to Output connections
+        # Hidden -> Output (FROM hidden TO output)
         if self.num_output > 0:
-            hidden_output_mask = create_mask(self.num_output, self.num_hidden, self.config.p_hidden_output, self.config.mask_distribution)
-            mask[self.num_input+self.num_hidden:, self.num_input:self.num_input+self.num_hidden] = hidden_output_mask
-            
-            if self.config.allow_output_to_hidden_feedback:
-                mask[self.num_input:self.num_input+self.num_hidden, self.num_input+self.num_hidden:] = hidden_output_mask.t()
+            hidden_output_mask = create_mask(self.num_hidden, self.num_output, self.config.p_hidden_output, self.config.mask_distribution)
+            mask[self.num_input:self.num_input+self.num_hidden, -self.num_output:] = hidden_output_mask
+
+        # Add feedback connections if allowed
+        if self.config.allow_hidden_to_input_feedback:
+            mask[self.num_input:self.num_input+self.num_hidden, :self.num_input] = input_hidden_mask.t()
         
-        # Input to Input connections
+        if self.config.allow_output_to_hidden_feedback:
+            mask[-self.num_output:, self.num_input:self.num_input+self.num_hidden] = hidden_output_mask.t()
+
+        # Recurrent connections
         if self.config.p_input_input > 0:
             input_input_mask = create_mask(self.num_input, self.num_input, self.config.p_input_input, self.config.mask_distribution)
             mask[:self.num_input, :self.num_input] = input_input_mask
-        
-        # Hidden to Hidden connections
+            
         if self.config.p_hidden_hidden > 0:
             hidden_hidden_mask = create_mask(self.num_hidden, self.num_hidden, self.config.p_hidden_hidden, self.config.mask_distribution)
             mask[self.num_input:self.num_input+self.num_hidden, self.num_input:self.num_input+self.num_hidden] = hidden_hidden_mask
-        
-        # Output to Output connections
+            
         if self.config.p_output_output > 0 and self.num_output > 0:
             output_output_mask = create_mask(self.num_output, self.num_output, self.config.p_output_output, self.config.mask_distribution)
-            mask[self.num_input+self.num_hidden:, self.num_input+self.num_hidden:] = output_output_mask
-        
-        # Skip connections (Input to Output)
+            mask[-self.num_output:, -self.num_output:] = output_output_mask
+
+        # Skip connections (Input -> Output)
         if self.config.allow_skip_connections and self.num_output > 0:
-            skip_mask = create_mask(self.num_output, self.num_input, self.config.p_skip_connections, self.config.mask_distribution)
-            mask[self.num_input+self.num_hidden:, :self.num_input] = skip_mask
-            mask[:self.num_input, self.num_input+self.num_hidden:] = skip_mask.t()
-        
-        # Remove self-connections if not allowed
+            skip_mask = create_mask(self.num_input, self.num_output, self.config.p_skip_connections, self.config.mask_distribution)
+            mask[:self.num_input, -self.num_output:] = skip_mask
+
         if not self.config.allow_self_connections:
             mask.diagonal().zero_()
-        
-        # Enforce symmetry if required
+            
         if self.config.enforce_symmetric_weights:
-            mask = torch.max(mask, mask.t())
-        
-        self.register_buffer('mask', mask)
+            mask = (mask + mask.t()) / 2
 
-    # def _create_power_law_mask(self, rows, cols, density):
-    #     """Generate a power law distribution mask."""
-    #     mask = torch.zeros(rows, cols)
-        
-    #     for i in range(rows):
-    #         x = torch.arange(1, cols + 1, dtype=torch.float32)
-    #         prob = 1 / x.pow(2)  # Using 1/x^2 distribution
-    #         prob /= prob.sum()
-    #         num_connections = int(cols * density)
-    #         connected = torch.multinomial(prob, num_connections, replacement=False)
-    #         mask[i, connected] = 1
-    #     return mask
+        self.register_buffer('mask', mask)  # No transpose needed
+
+
 
     def _create_power_law_mask(self, rows, cols, density, alpha=2.1):
         """Generate a power law distribution mask with many nodes having few connections."""
@@ -408,19 +367,15 @@ class SOENModel(nn.Module):
             J *= self.mask
         return J
         
-    def apply_constraints(self, J=None):
-        if J is None:
-            J = self.J
+    def apply_constraints(self):
         with torch.no_grad():
             if self.enforce_non_negativity_in_gamma:
-                self.gamma.data = self.gamma.data.abs()
-                self.gamma.data = torch.clamp(self.gamma.data, 0.0, 10.0)
+                self.gamma.data = torch.clamp(self.gamma.data.abs(), 0.0, 10.0)
             if self.enforce_non_negativity_in_tau:
-                self.tau.data = self.tau.data.abs()
-                self.tau.data = torch.clamp(self.tau.data, 0.0001, 10.0) # we dont want to divide by zero (in the s/tau calc)
-            self.flux_offset.data = torch.clamp(self.flux_offset.data, -0.5, 0.5) # there is no need for the flux offset to be outside of this range because it is periodic
-        
-        return J
+                self.tau.data = torch.clamp(self.tau.data.abs(), 0.0001, 10.0)
+            self.flux_offset.data = torch.clamp(self.flux_offset.data, -0.5, 0.5)
+            self.i_b.data = torch.clamp(self.i_b.data, 1.35, 2.0)
+
 
  
 
@@ -438,7 +393,6 @@ class SOENModel(nn.Module):
         This is the main function that performs the forward pass of the SOEN model.
         It simulates the dynamics of the network for a given input signal x and initial state vector.
         """
-
         # place the inputs onto the device
         x = x.to(self.device)
         # if we provided an input state vector then place it on the device
@@ -447,7 +401,7 @@ class SOENModel(nn.Module):
 
         
 
-        self.J.data = self.apply_constraints(self.J.data)
+        self.apply_constraints()
         # enforce symmetry on the weights only if active in the config file
         self.enforce_symmetry()
 
@@ -490,7 +444,7 @@ class SOENModel(nn.Module):
             s_old = s.clone()
             
             # Apply input if the input is flux
-            external_flux = apply_input(s, x, input_nodes, self.input_type, self.config.is_input_time_varying, t)
+            external_flux = apply_input(s, x, input_nodes, self.input_type, self.config.is_input_time_varying, t)     
             
             # calculate the phi values of every node and over the batch
             phi = calculate_phi(s, J_masked, self.flux_offset, external_flux)
@@ -503,6 +457,7 @@ class SOENModel(nn.Module):
 
             # update the state according to the main ds/dt equation
             s = update_state(s, phi, self.g, self.gamma, self.tau, self.dt, self.clip_state)
+            
             
             if not self.config.is_input_time_varying and self.input_type == 'state':
                 s[:, input_nodes] = x  # ensure the input states if we're clamping, remain clamped for non-time-varying inputs
@@ -583,46 +538,65 @@ class SOENModel(nn.Module):
         # print_analysis(analysis_result)
         return analysis_result
 
+    
     def find_initial_flux_offset(self, threshold=0.01, phi_start=0, phi_step=0.01, phi_max=0.5, num_s_samples=100):
-        """
-        Finds a good initial flux offset for all nodes by sweeping through phi values
-        until the average g value exceeds a specified threshold.
-
-        Args:
-        threshold (float): The threshold for the average g value (default: 0.01)
-        phi_start (float): The starting value for phi (default: 0)
-        phi_step (float): The step size for incrementing phi (default: 0.01)
-        phi_max (float): The maximum value for phi (default: 2.0)
-        num_s_samples (int): The number of s values to sample for averaging (default: 100)
-
-        Returns:
-        float: The found flux offset value
-        """
         s_values = torch.linspace(0, 1, num_s_samples).to(self.device)
-        phi = phi_start
+        flux_offsets = torch.zeros(self.num_total).to(self.device)
 
-        while phi <= phi_max:
-            phi_tensor = torch.full((num_s_samples,), phi).to(self.device)
-            g_values = self.g(phi_tensor, s_values)
-            avg_g = g_values.mean().item()
+        # Group nodes by both activation function and bias current
+        for func_idx, func_name in enumerate(self.config.activation_functions):
+            # Get mask for this activation function
+            func_mask = (self.activation_function_indices == func_idx)
+            
+            # Get unique bias currents for this activation function
+            unique_i_b = torch.unique(self.i_b[func_mask])
 
-            if avg_g > threshold:
-                # print(f"Found suitable flux offset: {phi:.4f} (avg g: {avg_g:.4f})")
-                return phi
+            for i_b in unique_i_b:
+                # Mask for both activation function and this specific bias current
+                mask = func_mask & (self.i_b == i_b)
+                
+                phi = phi_start
+                while phi <= phi_max:
+                    phi_tensor = torch.full((num_s_samples,), phi).to(self.device)
+                    
+                    if func_name == "NN_dendrite":
+                        # Ensure all tensors have the same shape
+                        num_nodes = mask.sum().item()
+                        phi_tensor = phi_tensor.unsqueeze(0).expand(num_nodes, -1)
+                        s_values_expanded = s_values.unsqueeze(0).expand(num_nodes, -1)
+                        
+                        # Expand i_b to match the shape of phi_tensor
+                        i_b_relevant = i_b.view(1, 1).expand(num_nodes, num_s_samples)
+                        
+                        g_values = self.activation_functions[func_name](phi_tensor, s_values_expanded, i_b_relevant)
+                    else:
+                        g_values = self.activation_functions[func_name](phi_tensor.unsqueeze(0), s_values.unsqueeze(0)).squeeze(0)
+                    
+                    avg_g = g_values.mean().item()
 
-            phi += phi_step
+                    if avg_g > threshold:
+                        flux_offsets[mask] = phi
+                        break
 
-        print(f"Warning: Could not find suitable flux offset. Max phi reached: {phi_max}")
-        return phi_max
+                    phi += phi_step
+
+                if phi > phi_max:
+                    print(f"Warning: Could not find suitable flux offset for activation function {func_name} with i_b={i_b}. Max phi reached: {phi_max}")
+                    flux_offsets[mask] = phi_max
+
+        return flux_offsets
 
 
     def set_initial_flux_offset(self):
         """
         Finds a good initial flux offset and sets it for all nodes.
         """
-        flux_offset = self.find_initial_flux_offset()
-        self.flux_offset.data.fill_(flux_offset)
-        
+        flux_offsets = self.find_initial_flux_offset()
+        self.flux_offset.data.copy_(flux_offsets)
+
+
+
+
 
 
 
@@ -634,4 +608,6 @@ class SOENModel(nn.Module):
 
 
 #
+
+
 
