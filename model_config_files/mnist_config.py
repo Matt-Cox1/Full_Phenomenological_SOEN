@@ -22,7 +22,7 @@ class MNISTConfig:
     run_to_equilibrium: bool = False  
     track_state_evolution: bool = True
     track_energy: bool = False
-    device: torch.device = torch.device("mps")
+    device: torch.device = torch.device("cpu") # here you can change the device to cuda, mps or cpu
 
     # Weight initialisation method
     weight_init_method: Literal["normal","glorot"] = "glorot"
