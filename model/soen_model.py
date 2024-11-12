@@ -208,7 +208,6 @@ class SOENModel(nn.Module):
             else:  # default to Bernoulli
                 return torch.bernoulli(torch.full((rows, cols), density, dtype=torch.float32))
 
-
         # Input to Hidden connections
         input_hidden_mask = create_mask(self.num_hidden, self.num_input, self.config.p_input_hidden, self.config.mask_distribution)
         mask[self.num_input:self.num_input+self.num_hidden, :self.num_input] = input_hidden_mask
@@ -253,6 +252,18 @@ class SOENModel(nn.Module):
         # Enforce symmetry if required
         if self.config.enforce_symmetric_weights:
             mask = torch.max(mask, mask.t())
+        
+        # Post-processing: Remove all hidden-hidden connections except self-connections if specified
+        if hasattr(self.config, 'only_self_connections_in_hidden') and self.config.only_self_connections_in_hidden:
+            hidden_start = self.num_input
+            hidden_end = self.num_input + self.num_hidden
+            hidden_mask = mask[hidden_start:hidden_end, hidden_start:hidden_end]
+            # Zero out all hidden-hidden connections
+            hidden_mask.zero_()
+            # Restore only self-connections if they're allowed
+            if self.config.allow_self_connections:
+                hidden_mask.diagonal().fill_(1)
+            mask[hidden_start:hidden_end, hidden_start:hidden_end] = hidden_mask
         
         self.register_buffer('mask', mask.t())
 
