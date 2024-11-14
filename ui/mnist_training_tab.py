@@ -620,6 +620,18 @@ class TrainingTab(QWidget):
             return int(value)
 
         def format_distribution(distribution_data):
+            # Handle case where input is a list
+            if isinstance(distribution_data, list):
+                content = "Connections | Count | Distribution\n"
+                content += "───────────┼───────┼────────────────────────────────────────────\n"
+                for item in distribution_data:
+                    connections = item.get('connections', 0)
+                    count = item.get('count', 0)
+                    bar = item.get('bar', '')
+                    content += f"{connections:11d} | {count:5d} | {bar}\n"
+                return content
+            
+            # Handle case where input is a dictionary
             if distribution_data.get("empty", False):
                 return distribution_data.get("message", "No data available.")
             
@@ -635,7 +647,13 @@ class TrainingTab(QWidget):
         formatted_text += "=" * 80 + "\n\n"
 
         if "network_structure" in analysis:
-            content = "\n".join([f"{k.replace('_', ' ').title():15} {v:,}" for k, v in analysis["network_structure"].items()])
+            content = ""
+            for k, v in analysis["network_structure"].items():
+                # Handle both number and list values
+                if isinstance(v, (int, float)):
+                    content += f"{k.replace('_', ' ').title():15} {v:,}\n"
+                else:
+                    content += f"{k.replace('_', ' ').title():15} {str(v)}\n"
             formatted_text += format_section("Network Structure", content)
 
         if "parameter_statistics" in analysis:

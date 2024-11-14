@@ -112,18 +112,10 @@ class SOENModel(nn.Module):
 
     def _initialise_network_structure(self):
         self.num_input = self.config.num_input
-        self.num_hidden = self.config.num_hidden if isinstance(self.config.num_hidden, list) else [self.config.num_hidden]
-        self.num_hidden_layers = len(self.num_hidden)
-        self.total_hidden = sum(self.num_hidden)
+        self.num_hidden = self.config.num_hidden
         self.num_output = self.config.num_output
-        self.num_total = self.num_input + self.total_hidden + self.num_output
+        self.num_total = self.num_input + self.num_hidden + self.num_output
         self.input_type = self.config.input_type
-        
-        # Calculate cumulative sums for layer indexing
-        self.layer_starts = [self.num_input]
-        for hidden_size in self.num_hidden[:-1]:
-            self.layer_starts.append(self.layer_starts[-1] + hidden_size)
-        self.layer_starts.append(self.layer_starts[-1] + self.num_hidden[-1])  # Output layer start
 
     def _initialise_network_parameters(self):
         self.bias_flux_offsets = self.config.bias_flux_offsets
@@ -205,109 +197,73 @@ class SOENModel(nn.Module):
 
     def _create_connection_mask(self):
         """
-        Create a mask for connections in the SOEN network with multiple hidden layers.
+        Create a mask for connections in the SOEN network using either power law or Bernoulli distribution.
         """
         mask = torch.zeros(self.num_total, self.num_total)
         
         def create_mask(rows, cols, density, distribution='bernoulli'):
             if distribution == 'power_law':
-                alpha = 1.1
-                return self._create_power_law_mask(rows, cols, density, alpha)
+                alpha = 1.1 # this is a steepness of the power law distribution
+                return self._create_power_law_mask(rows, cols, density,alpha)
             else:  # default to Bernoulli
                 return torch.bernoulli(torch.full((rows, cols), density, dtype=torch.float32))
 
-        # Input layer connections
-        if self.config.p_input_input > 0:
-            input_mask = create_mask(self.num_input, self.num_input, 
-                                   self.config.p_input_input, self.config.mask_distribution)
-            mask[:self.num_input, :self.num_input] = input_mask
-
-        # Hidden layer connections
-        for layer in range(self.num_hidden_layers):
-            layer_size = self.num_hidden[layer]
-            layer_start = self.layer_starts[layer]
-            next_start = self.layer_starts[layer + 1]
-            
-            # Connections from previous layer
-            prev_size = (self.num_input if layer == 0 
-                        else self.num_hidden[layer - 1])
-            prev_start = (0 if layer == 0 
-                         else self.layer_starts[layer - 1])
-            
-            # Forward connections
-            forward_mask = create_mask(layer_size, prev_size, 
-                                     self.config.p_input_hidden if layer == 0 
-                                     else self.config.p_inter_hidden,
-                                     self.config.mask_distribution)
-            mask[layer_start:next_start, prev_start:layer_start] = forward_mask
-            
-            # # Backward connections (if allowed)
-            # if ((layer == 0 and self.config.allow_hidden_to_input_feedback) or
-            #     (layer > 0 and self.config.allow_output_to_hidden_feedback)):
-            #     mask[prev_start:layer_start, layer_start:next_start] = forward_mask.t()
-            
-            # Within-layer connections
-            if self.config.p_hidden_hidden > 0 or self.config.p_hidden_self > 0:
-                # Create base mask for all within-layer connections
-                hidden_mask = create_mask(layer_size, layer_size,
-                                        self.config.p_hidden_hidden,
-                                        self.config.mask_distribution)
-                
-                # Handle self-connections separately
-                diagonal_mask = torch.zeros_like(hidden_mask)
-                if self.config.p_hidden_self > 0 and self.config.allow_self_connections:
-                    diagonal_mask.diagonal().fill_(1.0)
-                    diagonal_mask = create_mask(layer_size, layer_size,
-                                             self.config.p_hidden_self,
-                                             self.config.mask_distribution)
-                    diagonal_mask = diagonal_mask * torch.eye(layer_size)
-                
-                # Zero out diagonal in non-self connections
-                hidden_mask.diagonal().zero_()
-                
-                # Combine the masks
-                combined_mask = hidden_mask + diagonal_mask
-                mask[layer_start:next_start, layer_start:next_start] = combined_mask
-                
-
-        # Output layer connections
+        # Input to Hidden connections
+        input_hidden_mask = create_mask(self.num_hidden, self.num_input, self.config.p_input_hidden, self.config.mask_distribution)
+        mask[self.num_input:self.num_input+self.num_hidden, :self.num_input] = input_hidden_mask
+        
+        # Ensure bidirectional consistency for input-hidden connections
+        if self.config.allow_hidden_to_input_feedback:
+            mask[:self.num_input, self.num_input:self.num_input+self.num_hidden] = input_hidden_mask.t()
+        
+        # Hidden to Output connections
         if self.num_output > 0:
-            # Connections from last hidden layer to output
-            output_start = self.layer_starts[-1]
-            last_hidden_size = self.num_hidden[-1]
-            last_hidden_start = self.layer_starts[-2]
-            
-            output_mask = create_mask(self.num_output, last_hidden_size,
-                                    self.config.p_hidden_output,
-                                    self.config.mask_distribution)
-            mask[output_start:, last_hidden_start:output_start] = output_mask
+            hidden_output_mask = create_mask(self.num_output, self.num_hidden, self.config.p_hidden_output, self.config.mask_distribution)
+            mask[self.num_input+self.num_hidden:, self.num_input:self.num_input+self.num_hidden] = hidden_output_mask
             
             if self.config.allow_output_to_hidden_feedback:
-                mask[last_hidden_start:output_start, output_start:] = output_mask.t()
-            
-            # Output to output connections
-            if self.config.p_output_output > 0:
-                output_output_mask = create_mask(self.num_output, self.num_output,
-                                              self.config.p_output_output,
-                                              self.config.mask_distribution)
-                mask[output_start:, output_start:] = output_output_mask
-
+                mask[self.num_input:self.num_input+self.num_hidden, self.num_input+self.num_hidden:] = hidden_output_mask.t()
+        
+        # Input to Input connections
+        if self.config.p_input_input > 0:
+            input_input_mask = create_mask(self.num_input, self.num_input, self.config.p_input_input, self.config.mask_distribution)
+            mask[:self.num_input, :self.num_input] = input_input_mask
+        
+        # Hidden to Hidden connections
+        if self.config.p_hidden_hidden > 0:
+            hidden_hidden_mask = create_mask(self.num_hidden, self.num_hidden, self.config.p_hidden_hidden, self.config.mask_distribution)
+            mask[self.num_input:self.num_input+self.num_hidden, self.num_input:self.num_input+self.num_hidden] = hidden_hidden_mask
+        
+        # Output to Output connections
+        if self.config.p_output_output > 0 and self.num_output > 0:
+            output_output_mask = create_mask(self.num_output, self.num_output, self.config.p_output_output, self.config.mask_distribution)
+            mask[self.num_input+self.num_hidden:, self.num_input+self.num_hidden:] = output_output_mask
+        
         # Skip connections (Input to Output)
         if self.config.allow_skip_connections and self.num_output > 0:
-            skip_mask = create_mask(self.num_output, self.num_input,
-                                  self.config.p_skip_connections,
-                                  self.config.mask_distribution)
-            mask[self.layer_starts[-1]:, :self.num_input] = skip_mask
-            # Bidirectional skip connections if feedback is allowed
-            if self.config.allow_hidden_to_input_feedback:
-                mask[:self.num_input, self.layer_starts[-1]:] = skip_mask.t()
-
-        # Post-processing
+            skip_mask = create_mask(self.num_output, self.num_input, self.config.p_skip_connections, self.config.mask_distribution)
+            mask[self.num_input+self.num_hidden:, :self.num_input] = skip_mask
+            mask[:self.num_input, self.num_input+self.num_hidden:] = skip_mask.t()
+        
+        # Remove self-connections if not allowed
         if not self.config.allow_self_connections:
             mask.diagonal().zero_()
         
+        # Enforce symmetry if required
         if self.config.enforce_symmetric_weights:
             mask = torch.max(mask, mask.t())
+        
+        # Post-processing: Remove all hidden-hidden connections except self-connections if specified
+        if hasattr(self.config, 'only_self_connections_in_hidden') and self.config.only_self_connections_in_hidden:
+            hidden_start = self.num_input
+            hidden_end = self.num_input + self.num_hidden
+            hidden_mask = mask[hidden_start:hidden_end, hidden_start:hidden_end]
+            # Zero out all hidden-hidden connections
+            hidden_mask.zero_()
+            # Restore only self-connections if they're allowed
+            if self.config.allow_self_connections:
+                hidden_mask.diagonal().fill_(1)
+            mask[hidden_start:hidden_end, hidden_start:hidden_end] = hidden_mask
         
         self.register_buffer('mask', mask.t())
 
@@ -350,7 +306,6 @@ class SOENModel(nn.Module):
                 mask[i, connected] = 1
         
         return mask
-    
 
 
     

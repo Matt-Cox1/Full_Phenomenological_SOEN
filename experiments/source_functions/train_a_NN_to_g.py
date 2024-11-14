@@ -19,7 +19,7 @@ import seaborn as sns
 import time
 from dataclasses import dataclass
 
-device = torch.device("cpu")
+device = torch.device("cuda")
 
 
 @dataclass # (dataclass is a decorator that automatically generates special methods - just makes it a bit neater)

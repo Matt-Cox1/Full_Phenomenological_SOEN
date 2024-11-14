@@ -45,6 +45,7 @@ class TwoMoonsConfig:
     p_hidden_output: float = 1
     p_input_input: float = 0.0
     p_hidden_hidden: float = 1
+    p_hidden_self: float = 0.0
     p_output_output: float = 0.0
     allow_output_to_hidden_feedback: bool = True
     allow_hidden_to_input_feedback: bool = True

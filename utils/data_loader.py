@@ -78,7 +78,7 @@ def load_two_moons_data(X=None, y=None, scaler=None, batch_size=32, val_split=0.
 
 
 
-def load_audio_data(batch_size=64, val_split=0.2):
+def load_audio_data(batch_size=256, val_split=0.2):
     """
     Load and prepare spoken digits dataset.
     

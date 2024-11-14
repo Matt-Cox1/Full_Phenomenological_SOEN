@@ -9,7 +9,7 @@ import torch
 class MNISTConfig:
     # Network structure
     num_input: int = 784
-    num_hidden: int = 1000
+    num_hidden: List[int] = field(default_factory=lambda: [1000])  # List of hidden layer sizes
     num_output: int = 10
     input_type: str = "state"
     is_input_time_varying: bool = False
@@ -45,6 +45,7 @@ class MNISTConfig:
     p_hidden_output: float = 0.05
     p_input_input: float = 0.0
     p_hidden_hidden: float = 0.01
+    p_hidden_self: float = 0.0
     p_output_output: float = 0.0
     allow_output_to_hidden_feedback: bool = False
     allow_hidden_to_input_feedback: bool = False

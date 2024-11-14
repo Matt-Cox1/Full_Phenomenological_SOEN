@@ -16,7 +16,7 @@ to be set, network architecture to be chosen, and experimental features toggled 
 class SOENConfig:
     # Network structure
     num_input: int = 1
-    num_hidden: int = 1
+    num_hidden: List[int] = field(default_factory=lambda: [1])  # List of hidden layer sizes
     num_output: int = 1
     input_type: str = "state"  # 'state' or 'flux'
     is_input_time_varying: bool = False
@@ -29,7 +29,7 @@ class SOENConfig:
     run_to_equilibrium: bool = False  
     track_state_evolution: bool = False
     track_energy: bool = False
-    device: torch.device = torch.device("cpu")# the method of device allocation could be improved
+    device: torch.device = torch.device("cuda")# the method of device allocation could be improved
 
     # Initialisation parameters
     # Weight initialisation method
@@ -56,12 +56,17 @@ class SOENConfig:
 
     # Connection probabilities
     p_input_input: float = 1.0
-    p_hidden_hidden: float = 1
     p_output_output: float = 1.0
 
     p_input_hidden: float =1.0 # equal to the prob of connecting a hidden to input node if allow_hidden_to_input_feedback=True
-    p_hidden_output: float = 1.0 # same here
+    p_hidden_self: float = 1.0 # prob of a hidden node connecting to itself (like in a RNN)
+    p_hidden_hidden: float = 1.0 # prob of connecting to a different hidden node in the same layer
     
+    # p_inter_hidden: List[int] = field(default_factory=lambda:[1.0]) #when there is more than one hidden layer, this defines forward connection probabilities from successive hidden layers to the next one
+    p_inter_hidden: float = 1.0 #when there is more than one hidden layer, this defines forward connection probabilities from successive hidden layers to the next one
+    # note that when there's only one hidden layer, this is unused
+
+
 
     allow_self_connections: bool = False
     allow_output_to_hidden_feedback: bool = False

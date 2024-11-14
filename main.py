@@ -6,6 +6,7 @@ from ui.main_window import MainWindow
 from model.soen_model import SOENModel
 from model.model_config import SOENConfig
 import logging
+import torch
 
 
 def setup_logging():
@@ -17,7 +18,7 @@ def main():
     
     """
     Entry point of the SOEN Monitor application.
-    Sets up the data, model, and launches the main window.
+    Sets up the data, model, and launches the main window. 
     """
 
     setup_logging()
@@ -32,4 +33,7 @@ def main():
     sys.exit(app.exec_())
 
 if __name__ == "__main__":
+
+    print(f"CUDA available: {torch.cuda.is_available()}")
+    print(f"Current device: {torch.cuda.get_device_name(0)}")
     main()

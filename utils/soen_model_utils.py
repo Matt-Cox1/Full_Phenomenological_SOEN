@@ -45,6 +45,10 @@ def visualise_soen_network(
     layout: Literal['circular', 'linear'] = 'circular',
     show_legend: bool = True,
 ) -> None:
+    # Create figure and axes
+    fig = plt.figure(figsize=figsize, dpi=dpi)
+    ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])  # [left, bottom, width, height]
+
     edge_threshold = 0
     G = nx.DiGraph()
 
@@ -58,33 +62,61 @@ def visualise_soen_network(
         input_color, hidden_color, output_color = '#FF6B6B', '#20639B', '#FFA500'
         line_color, border_color, node_edge_color = '#CCCCCC', 'black', 'black'
 
-    # Node setup
+    # Modified node setup for multiple hidden layers
     input_nodes = [f'input_{i}' for i in range(model.num_input)]
-    hidden_nodes = [f'hidden_{i}' for i in range(model.num_hidden)]
+    hidden_layers = []
+    total_hidden_nodes = 0
+    for layer_idx, layer_size in enumerate(model.num_hidden):
+        layer_nodes = [f'hidden_{layer_idx}_{i}' for i in range(layer_size)]
+        hidden_layers.append(layer_nodes)
+        total_hidden_nodes += layer_size
     output_nodes = [f'output_{i}' for i in range(model.num_output)]
 
-    # Add nodes to graph
-    for nodes, color, layer in zip([input_nodes, hidden_nodes, output_nodes], 
-                                   [input_color, hidden_color, output_color],
-                                   [0, 1, 2]):
-        if nodes:
-            G.add_nodes_from(nodes, color=color, layer=layer)
+    # Create flattened list of all nodes
+    all_nodes = input_nodes + [node for layer in hidden_layers for node in layer] + output_nodes
 
-    # Edge setup
+    # Add nodes to graph with appropriate colors
+    all_layers = [input_nodes] + hidden_layers + [output_nodes]
+    num_layers = len(all_layers)
+    
+    # Generate colors for hidden layers (gradient between hidden_color and output_color)
+    if len(hidden_layers) > 1:
+        hidden_colors = [
+            _interpolate_color(hidden_color, output_color, i/(len(hidden_layers)-1))
+            for i in range(len(hidden_layers))
+        ]
+    else:
+        hidden_colors = [hidden_color]
+
+    # Add nodes with colors
+    for layer_idx, layer_nodes in enumerate(all_layers):
+        if layer_idx == 0:
+            color = input_color
+        elif layer_idx == num_layers - 1:
+            color = output_color
+        else:
+            color = hidden_colors[layer_idx - 1]
+        
+        if layer_nodes:
+            G.add_nodes_from(layer_nodes, color=color, layer=layer_idx)
+
+    # Optimize J matrix operations - do this once upfront
     J_masked = model.J.data.cpu().numpy() * model.mask.cpu().numpy()
-    all_nodes = input_nodes + hidden_nodes + output_nodes
-    for i, from_node in enumerate(all_nodes):
-        for j, to_node in enumerate(all_nodes):
-            if abs(J_masked[i, j]) > edge_threshold:  # Changed from [j,i] to [i,j]
-                G.add_edge(from_node, to_node, weight=abs(J_masked[i, j]), sign=np.sign(J_masked[i, j]))
+    edge_indices = np.where(np.abs(J_masked) > edge_threshold)
+    
+    # Modified edge setup - much faster than nested loops
+    for from_idx, to_idx in zip(*edge_indices):
+        from_node = all_nodes[from_idx]
+        to_node = all_nodes[to_idx]
+        weight = abs(J_masked[from_idx, to_idx])
+        sign = np.sign(J_masked[from_idx, to_idx])
+        G.add_edge(from_node, to_node, weight=weight, sign=sign)
 
-    # Create the figure
-    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-
-    # Determine active layers and their positions
-    active_layers = [layer for layer in [input_nodes, hidden_nodes, output_nodes] if layer]
+    # Modified layout calculation
+    active_layers = [layer for layer in all_layers if layer]
     num_active_layers = len(active_layers)
-    layer_positions = [i / (num_active_layers - 1) if num_active_layers > 1 else 0.5 for i in range(num_active_layers)]
+    layer_positions = [i / (num_active_layers - 1) if num_active_layers > 1 else 0.5 
+                      for i in range(num_active_layers)]
 
     # Custom layout
     pos = {}
@@ -134,8 +166,8 @@ def visualise_soen_network(
 
     # Key Banner
     legend_elements = []
-    for nodes, color, label in zip([input_nodes, hidden_nodes, output_nodes],
-                                   [input_color, hidden_color, output_color],
+    for nodes, color, label in zip([input_nodes, hidden_layers, output_nodes],
+                                   [input_color, hidden_colors, output_color],
                                    ['Input Node', 'Hidden Node', 'Output Node']):
         if nodes:
             legend_elements.append(plt.Line2D([0], [0], marker='o', color='w', label=label, 
@@ -174,6 +206,21 @@ def visualise_soen_network(
 
     # plt.tight_layout()
     plt.show()
+
+def _interpolate_color(color1: str, color2: str, t: float) -> str:
+    """Helper function to interpolate between two colors"""
+    def hex_to_rgb(hex_color):
+        hex_color = hex_color.lstrip('#')
+        return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+    
+    def rgb_to_hex(rgb):
+        return '#{:02x}{:02x}{:02x}'.format(*[int(x) for x in rgb])
+    
+    c1 = hex_to_rgb(color1)
+    c2 = hex_to_rgb(color2)
+    
+    rgb = tuple(int(c1[i] * (1-t) + c2[i] * t) for i in range(3))
+    return rgb_to_hex(rgb)
 
 
 

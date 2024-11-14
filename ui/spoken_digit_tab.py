@@ -24,6 +24,10 @@ This file defines the TrainingTab class, a central component of the SOEN Model M
 It provides a user interface for training SOEN models on the MNIST dataset and visualising the training process.
 """
 
+def format_section(title, content):
+    """Helper function to format sections of the network analysis report."""
+    separator = "=" * 80
+    return f"\n{title}\n{separator}\n{content}\n\n"
 
 class SpokenDigitTrainingTab(QWidget):
     def __init__(self, model, train_loader, val_loader):
@@ -355,12 +359,11 @@ class SpokenDigitTrainingTab(QWidget):
 
     def update_plots(self, data):
         if not data:  # Reset plots
-            for plot in [self.loss_plot, self.acc_plot]:
-                plot.clear()
-            self.weight_plot.clear()
-            self.input_state_plot.clear()
+            self.loss_plot.clear()
+            self.acc_plot.clear()
+            self.mel_spec_plot.clear()
+            self.network_response_plot.clear()
             self.hidden_state_plot.clear()
-            self.output_state_plot.clear()
             return
 
         is_validation = data.get('is_validation', False)
@@ -385,34 +388,17 @@ class SpokenDigitTrainingTab(QWidget):
                 update_line_plot(self.loss_plot, self.val_batches, self.val_losses, "Val Loss", 'b')
                 update_line_plot(self.acc_plot, self.val_batches, self.val_accs, "Val Acc", 'b')
         
-            if self.show_weight_matrix and 'weight_matrix' in data and data['weight_matrix'] is not None:
-                update_image_plot(self.weight_plot, data['weight_matrix'], "Weight Matrix")
+            if 'mel_spectrogram' in data and data['mel_spectrogram'] is not None:
+                self.mel_spec_plot.setImage(data['mel_spectrogram'].T)
+                self.mel_spec_plot.setTitle("Mel Spectrogram")
 
-            if self.show_state_evolution and 'final_state_info' in data and data['final_state_info'] is not None:
-                final_state_info = data['final_state_info']
-                
-                # Plot input states - preserve audio data structure
-                input_data = final_state_info['input_states']
-                if len(input_data.shape) == 1:
-                    # Assuming audio data has a specific temporal structure
-                    # You might need to adjust these dimensions based on your actual data
-                    time_steps = input_data.shape[0] // feature_dim  # You'll need to define feature_dim
-                    input_data = input_data.reshape(time_steps, feature_dim)
-                update_image_plot(self.input_state_plot, input_data, "Input Audio States")
-                
-                # Plot hidden states
-                hidden_states = final_state_info['hidden_states']
-                if len(hidden_states.shape) == 1:
-                    hidden_states = hidden_states.reshape(-1, 1)
-                update_image_plot(self.hidden_state_plot, hidden_states, 
-                                f"Hidden States ({final_state_info['num_hidden']} nodes)")
-                
-                # Plot output states
-                output_states = final_state_info['output_states']
-                if len(output_states.shape) == 1:
-                    output_states = output_states.reshape(-1, 1)
-                update_image_plot(self.output_state_plot, output_states, 
-                                f"Output States ({final_state_info['num_output']} nodes)")
+            if 'network_response' in data and data['network_response'] is not None:
+                self.network_response_plot.setImage(data['network_response'].T)
+                self.network_response_plot.setTitle("Network Response")
+
+            if 'hidden_states' in data and data['hidden_states'] is not None:
+                self.hidden_state_plot.setImage(data['hidden_states'].T)
+                self.hidden_state_plot.setTitle("Hidden State Evolution")
 
         self.text_info.setText(data.get('text_info', ''))
         self.param_stats_info.setText(data.get('param_stats_info', ''))
@@ -634,15 +620,11 @@ class SpokenDigitTrainingTab(QWidget):
             content = "Parameter   |   Mean   |   Std Dev\n"
             content += "────────────┼──────────┼───────────\n"
             for param, stats in param_stats.items():
-                content += f"{param:11} | {stats['mean']:8.4f} | {stats['std']:9.4f}\n"
+                # Add type checking for mean and std values
+                mean = f"{stats['mean']:8.4f}" if isinstance(stats['mean'], (int, float)) else str(stats['mean'])
+                std = f"{stats['std']:9.4f}" if isinstance(stats['std'], (int, float)) else str(stats['std'])
+                content += f"{param:11} | {mean} | {std}\n"
             return content
-
-        def format_section(title, content):
-            section = f"\n{'─' * 80}\n"
-            section += f"  {title.upper()}\n"
-            section += f"{'─' * 80}\n"
-            section += content + "\n"
-            return section
 
         def parse_value(value):
             if isinstance(value, str):
@@ -659,6 +641,21 @@ class SpokenDigitTrainingTab(QWidget):
             return int(value) if isinstance(value, (int, float)) else 0
 
         def format_distribution(distribution_data):
+            # Handle case where distribution_data is a list
+            if isinstance(distribution_data, list):
+                content = "Connections | Count | Distribution\n"
+                content += "───────────┼───────┼────────────────────────────────────────────\n"
+                for item in distribution_data:
+                    connections = item.get('connections', 'N/A')
+                    count = item.get('count', 0)
+                    bar = item.get('bar', '')
+                    # Format the line
+                    conn = f"{connections:11}" if isinstance(connections, str) else f"{connections:11d}"
+                    count_str = f"{count:5d}" if isinstance(count, (int, float)) else f"{str(count):5}"
+                    content += f"{conn} | {count_str} | {bar}\n"
+                return content
+            
+            # Handle case where distribution_data is a dictionary
             if distribution_data.get("empty", False):
                 return distribution_data.get("message", "No data available.")
             
@@ -666,16 +663,25 @@ class SpokenDigitTrainingTab(QWidget):
             content += "───────────┼───────┼────────────────────────────────────────────\n"
             for connections, data in distribution_data["distribution"].items():
                 bar = data["bar"]
-                count = data["count"]
-                content += f"{connections:11d} | {count:5d} | {bar}\n"
+                # Add type checking for count
+                count = f"{data['count']:5d}" if isinstance(data['count'], (int, float)) else str(data['count'])
+                # Ensure connections is properly formatted
+                conn = f"{connections:11d}" if isinstance(connections, (int, float)) else f"{str(connections):11}"
+                content += f"{conn} | {count} | {bar}\n"
             return content
 
         formatted_text = "SOEN Network Analysis\n"
         formatted_text += "=" * 80 + "\n\n"
 
         if "network_structure" in analysis:
-            content = "\n".join([f"{k.replace('_', ' ').title():15} {v:,}" for k, v in analysis["network_structure"].items()])
-            formatted_text += format_section("Network Structure", content)
+            # Modified formatting to handle different value types
+            content = []
+            for k, v in analysis["network_structure"].items():
+                key = k.replace('_', ' ').title()
+                # Format numbers with comma separator, leave other types as-is
+                value = f"{v:,}" if isinstance(v, (int, float)) else str(v)
+                content.append(f"{key:15} {value}")
+            formatted_text += format_section("Network Structure", "\n".join(content))
 
         if "parameter_statistics" in analysis:
             formatted_text += format_section("Parameter Statistics", format_param_stats(analysis["parameter_statistics"]))
@@ -693,16 +699,20 @@ class SpokenDigitTrainingTab(QWidget):
 
         if "weight_matrix" in analysis:
             wm = analysis["weight_matrix"]
+            # Add type checking for sparsity
+            sparsity = f"{wm['sparsity']*100:.2f}" if isinstance(wm['sparsity'], (int, float)) else str(wm['sparsity'])
             content = f"Shape:                {wm['shape']}\n"
             content += f"Non-zero Elements:    {parse_value(wm['non_zero']):,}\n"
-            content += f"Sparsity:             {wm['sparsity']*100:.2f}%"
+            content += f"Sparsity:             {sparsity}%"
             formatted_text += format_section("Weight Matrix Analysis", content)
 
         if "overall_statistics" in analysis:
             os = analysis["overall_statistics"]
+            # Add type checking for sparsity
+            sparsity = f"{os['sparsity']*100:.2f}" if isinstance(os['sparsity'], (int, float)) else str(os['sparsity'])
             content = f"Total Possible Connections:   {parse_value(os['total_possible']):,}\n"
             content += f"Actual Connections:           {parse_value(os['actual_connections']):,}\n"
-            content += f"Sparsity:                     {os['sparsity']*100:.2f}%"
+            content += f"Sparsity:                     {sparsity}%"
             formatted_text += format_section("Overall Statistics", content)
 
         if "input_node_connections" in analysis:
@@ -710,8 +720,15 @@ class SpokenDigitTrainingTab(QWidget):
                                             format_distribution(analysis["input_node_connections"]))
 
         if "hidden_node_connections" in analysis:
-            formatted_text += format_section("Hidden Node Connectivity Distribution", 
-                                            format_distribution(analysis["hidden_node_connections"]))
+            # Handle multiple hidden layers
+            if isinstance(analysis["hidden_node_connections"], list):
+                for i, layer_data in enumerate(analysis["hidden_node_connections"]):
+                    formatted_text += format_section(f"Hidden Layer {i+1} Connectivity Distribution", 
+                                                  format_distribution(layer_data))
+            else:
+                # Handle single layer case
+                formatted_text += format_section("Hidden Node Connectivity Distribution", 
+                                              format_distribution(analysis["hidden_node_connections"]))
 
         if "output_node_connections" in analysis:
             formatted_text += format_section("Output Node Connectivity Distribution", 

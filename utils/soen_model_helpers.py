@@ -11,6 +11,7 @@ import random
 
 
 
+
 def update_state(s, phi, g, gamma, tau, dt, clip_state):
     g_value = g(phi, s)
     ds = gamma * g_value.detach() + (g_value - g_value.detach()) - s / tau
@@ -20,7 +21,14 @@ def update_state(s, phi, g, gamma, tau, dt, clip_state):
         s = s + dt * ds
     return s
 
-
+# def update_state_minGRU(s, phi, g, gamma, tau, dt, clip_state, ):
+#     g_value = g(phi, s)
+#     ds = gamma * g_value.detach() + (g_value - g_value.detach()) - s / tau
+#     if clip_state:
+#         s = torch.clamp(s + dt * ds, 0.0, 1)
+#     else:
+#         s = s + dt * ds
+#     return s
 
 
 class RateNN(nn.Module):
@@ -56,7 +64,7 @@ class NNDendriteWrapper:
     """
     def __init__(self, model_path, i_b):
         self.nn_model = RateNN()
-        self.nn_model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+        self.nn_model.load_state_dict(torch.load(model_path, map_location=torch.device('cuda')))
         self.nn_model.eval()  
         self.i_b = i_b
         
@@ -76,6 +84,40 @@ class NNDendriteWrapper:
         output = self.nn_model(input_data)
         result = output.squeeze(-1).clamp(min=0, max=1) # this step might not be needed but just in case
         return result
+
+    def __call__(self, phi, s):
+        return self.periodic_function(phi, s)
+    
+class NNDendriteWrapperMinGRU:
+    """
+    Similar to NNDendriteWrapper but for the MinGRU model
+    """
+    def __init__(self, model_path, i_b):
+        self.nn_model = RateNN()
+        self.nn_model.load_state_dict(torch.load(model_path, map_location=torch.device('cuda')))
+        self.nn_model.eval()  
+        self.i_b = i_b
+        
+        for param in self.nn_model.parameters():
+            param.requires_grad = False
+        
+        self.periodic_function = make_periodic(self._original_call)
+
+    def to(self, device):
+        self.nn_model = self.nn_model.to(device)
+        return self
+
+    def _original_call(self, phi, s):
+        device = phi.device
+        i_b_tensor = torch.full_like(s, self.i_b, device=device) # if we ever want each node to have a different i_b the this needs to change
+        input_data = torch.stack((s, phi.abs(), i_b_tensor), dim=-1)
+        output = self.nn_model(input_data)
+        result = output.squeeze(-1).clamp(min=0, max=1) # this step might not be needed but just in case
+        return result
+    
+
+
+
 
     def __call__(self, phi, s):
         return self.periodic_function(phi, s)

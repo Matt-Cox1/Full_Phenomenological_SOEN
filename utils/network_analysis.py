@@ -15,7 +15,9 @@ def format_number(num: float) -> str:
 def analyse_network_structure(model: Any) -> Dict[str, int]:
     return {
         "input_nodes": model.num_input,
-        "hidden_nodes": model.num_hidden,
+        "hidden_nodes": model.total_hidden,
+        "hidden_layers": model.num_hidden_layers,
+        "hidden_layer_sizes": model.num_hidden,
         "output_nodes": model.num_output,
         "total_nodes": model.num_total
     }
@@ -83,15 +85,47 @@ def analyse_parameter_statistics(model: Any) -> Dict[str, Dict[str, float]]:
     return param_stats
 
 
-def analyse_node_connections(connections: torch.Tensor) -> Dict[str, Any]:
+def analyse_node_connections(model: Any) -> Dict[str, Any]:
+    connections_per_node = torch.sum(model.mask, dim=1)
+    
+    # Get layer start indices from the model
+    layer_starts = model.layer_starts
+    
+    # Analyze input layer connections
+    input_connections = analyse_node_connections_layer(
+        connections_per_node[:model.num_input]
+    )
+    
+    # Analyze each hidden layer separately
+    hidden_layer_connections = []
+    for layer in range(model.num_hidden_layers):
+        start_idx = layer_starts[layer]
+        end_idx = layer_starts[layer + 1]
+        layer_connections = analyse_node_connections_layer(
+            connections_per_node[start_idx:end_idx]
+        )
+        hidden_layer_connections.append(layer_connections)
+    
+    # Analyze output layer connections
+    output_connections = analyse_node_connections_layer(
+        connections_per_node[-model.num_output:]
+    )
+    
+    return {
+        "input_layer": input_connections,
+        "hidden_layers": hidden_layer_connections,
+        "output_layer": output_connections
+    }
+
+def analyse_node_connections_layer(connections: torch.Tensor) -> Dict[str, Any]:
     if connections.numel() == 0:
-        return {"empty": True, "message": "No connections found for this node type."}
+        return {"empty": True, "message": "No connections found for this layer."}
     
     connection_counts = torch.bincount(connections.long())
     max_connections = connection_counts.numel() - 1
     
     if max_connections == 0:
-        return {"empty": True, "message": "All nodes have 0 connections."}
+        return {"empty": True, "message": "All nodes in this layer have 0 connections."}
     
     max_bar_height = connection_counts.max().item()
     distribution = {}
@@ -139,8 +173,18 @@ def print_analysis(analysis: Dict[str, Any], verbosity_level: int = 3) -> None:
     print()
 
     if verbosity_level >= 1 and "network_structure" in analysis:
-        content = "\n".join([f"{k.replace('_', ' ').title():15} {v:,}" for k, v in analysis["network_structure"].items()])
-        print_section("Network Structure", content)
+        content = [
+            f"{'Input Nodes':15} {analysis['network_structure']['input_nodes']:,}",
+            f"{'Hidden Layers':15} {analysis['network_structure']['hidden_layers']:,}",
+            f"{'Total Hidden':15} {analysis['network_structure']['hidden_nodes']:,}"
+        ]
+        # Add individual layer sizes
+        for i, size in enumerate(analysis['network_structure']['hidden_layer_sizes']):
+            content.append(f"{'Layer ' + str(i+1) + ' Size':15} {size:,}")
+        content.append(f"{'Output Nodes':15} {analysis['network_structure']['output_nodes']:,}")
+        content.append(f"{'Total Nodes':15} {analysis['network_structure']['total_nodes']:,}")
+        
+        print_section("Network Structure", "\n".join(content))
 
     if verbosity_level >= 2 and "parameters" in analysis:
         content = ""
@@ -215,8 +259,13 @@ def format_network_analysis(analysis: Dict[str, Any]) -> str:
     formatted_text += "=" * 80 + "\n\n"
 
     if "network_structure" in analysis:
-        content = "\n".join([f"{k.replace('_', ' ').title():15} {v:,}" for k, v in analysis["network_structure"].items()])
-        formatted_text += format_section("Network Structure", content)
+        content = []
+        for k, v in analysis["network_structure"].items():
+            if k == "hidden_layer_sizes":
+                content.append(f"{'Hidden Layer Sizes':15} {str(v)}")
+            else:
+                content.append(f"{k.replace('_', ' ').title():15} {v:,}")
+        formatted_text += format_section("Network Structure", "\n".join(content))
 
     if "parameters" in analysis:
         content = ""
@@ -250,8 +299,10 @@ def format_network_analysis(analysis: Dict[str, Any]) -> str:
                                          format_distribution(analysis["input_node_connections"]))
 
     if "hidden_node_connections" in analysis:
-        formatted_text += format_section("Hidden Node Connectivity Distribution", 
-                                         format_distribution(analysis["hidden_node_connections"]))
+        # Handle multiple hidden layers
+        for i, layer_data in enumerate(analysis["hidden_node_connections"]):
+            formatted_text += format_section(f"Hidden Layer {i+1} Connectivity Distribution", 
+                                          format_distribution(layer_data))
 
     if "output_node_connections" in analysis:
         formatted_text += format_section("Output Node Connectivity Distribution", 
@@ -273,10 +324,11 @@ def analyse_network(model: Any, verbosity_level: int = 3) -> Dict[str, Any]:
         analysis["overall_statistics"] = analyse_overall_statistics(model)
         analysis["connection_distribution"] = analyse_connection_distribution(model)
         
-        connections_per_node = torch.sum(model.mask, dim=1)
-        analysis["input_node_connections"] = analyse_node_connections(connections_per_node[:model.num_input])
-        analysis["hidden_node_connections"] = analyse_node_connections(connections_per_node[model.num_input:model.num_input+model.num_hidden])
-        analysis["output_node_connections"] = analyse_node_connections(connections_per_node[-model.num_output:])
+        # Pass the model directly to analyse_node_connections
+        node_connections = analyse_node_connections(model)
+        analysis["input_node_connections"] = node_connections["input_layer"]
+        analysis["hidden_node_connections"] = node_connections["hidden_layers"]
+        analysis["output_node_connections"] = node_connections["output_layer"]
         
         analysis["parameter_statistics"] = analyse_parameter_statistics(model)
     

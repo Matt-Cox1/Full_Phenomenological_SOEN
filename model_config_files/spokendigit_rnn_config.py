@@ -1,5 +1,12 @@
-
 # FILENAME: Application/model_config_files/spokendigit_rnn_config.py
+
+#todos
+#add linear offset to spoken digit data generation to mask weak signals (in log case?)
+#think about how to use dendrites to fake a sigmoid function, or alternatively just train a network to do that and reuse that block! (unclamped case)
+#fix MA issues at beginning of audio files
+#still need to try unclamped phi/state to see if that makes things a lot worse
+
+#
 
 from dataclasses import dataclass, field
 from typing import List, Literal
@@ -8,8 +15,8 @@ import torch
 @dataclass
 class SpokenDigitRNNConfig:
     # Network structure
-    num_input: int = 64
-    num_hidden: int = 64
+    num_input: int = 32
+    num_hidden: List[int] = field(default_factory=lambda: [64,32,32])  # List of hidden layer sizes
     num_output: int = 10
     input_type: str = "state"
     is_input_time_varying: bool = True
@@ -22,7 +29,7 @@ class SpokenDigitRNNConfig:
     run_to_equilibrium: bool = False  
     track_state_evolution: bool = True
     track_energy: bool = False
-    device: torch.device = torch.device("cpu") # here you can change the device to cuda, mps or cpu
+    device: torch.device = torch.device("cuda") # here you can change the device to cuda, mps or cpu
 
     # Weight initialisation method
     weight_init_method: Literal["normal","glorot"] = "glorot"
@@ -41,10 +48,12 @@ class SpokenDigitRNNConfig:
     tau_std: float = 0.5
 
     # Connection probabilities
-    p_input_hidden: float = 1
-    p_hidden_output: float = 1
+    p_input_hidden: float = 1.0
+    p_hidden_output: float = 1.0
     p_input_input: float = 0.0
-    p_hidden_hidden: float = 1.0
+    p_hidden_self: float = 1.0
+    p_hidden_hidden: float = 0.0
+    p_inter_hidden: float = 1.0
     p_output_output: float = 0.0
     allow_output_to_hidden_feedback: bool = False
     allow_hidden_to_input_feedback: bool = False
@@ -84,6 +93,9 @@ class SpokenDigitRNNConfig:
         "energy_kinetic",
     ] ="energy_simple"
     
+
+    def __post_init__(self):
+        self.num_hidden_layers = len(self.num_hidden)
 
 
 
