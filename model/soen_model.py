@@ -44,6 +44,10 @@ class SOENModel(nn.Module):
         self._initialise_network_parameters() # things like: dt, max_iter, tol, etc
         self._initialise_network_structure() # num_input, num_hidden, num_output, etc
         self._initialise_model_parameters() # J, gamma, tau, etc
+        
+        # Initialize phi_hidden with a default shape of [1, num_total]
+        self.register_buffer('phi_hidden', torch.zeros(self.config.batch_size, self.num_total))
+        
         self.to(self.device) 
         
         
@@ -102,12 +106,16 @@ class SOENModel(nn.Module):
         if hasattr(self, 'nn_dendrite_wrapper') and self.nn_dendrite_wrapper is not None:
             self.nn_dendrite_wrapper = self.nn_dendrite_wrapper.to(device)
         self.J = self.J.to(device)
+        self.JZ = self.JZ.to(device)
         self.gamma = self.gamma.to(device)
         self.tau = self.tau.to(device)
         self.flux_offset = self.flux_offset.to(device)
+        self.flux_offset_Z = self.flux_offset_Z.to(device)
         self.external_flux = self.external_flux.to(device)
         self.mask = self.mask.to(device)
         self.i_b = self.i_b.to(device)  
+        self.phi_hidden = self.phi_hidden.to(device)
+
         return self
 
     def _initialise_network_structure(self):
@@ -150,35 +158,99 @@ class SOENModel(nn.Module):
 
         # Generate a random seed using Python's random module
         random_seed = random.randint(0, 2**32 - 1)
-
-        # Set PyTorch's seed for parameter initialisation
         torch.manual_seed(random_seed)
 
-        # Initialise parameters
+        # Initialize J 
         if self.config.weight_init_method == "normal":
             self.J = nn.Parameter(torch.randn(self.num_total, self.num_total) * self.config.init_scale)
         elif self.config.weight_init_method == "glorot":
             self.J = self._initialise_glorot_weights()
         else:
-            raise ValueError(f"Unknown weight initialisation method: {self.config.weight_init_method}")
+            raise ValueError(f"Unknown weight initialization method: {self.config.weight_init_method}")
+        
+        if self.config.z_weight_init_method == "normal":
+            self.JZ = nn.Parameter(torch.randn(self.num_total, self.num_total) * self.config.z_init_scale)
+        elif self.config.z_weight_init_method == "glorot":
+            self.JZ = self._initialise_glorot_weights()
+        else:
+            raise ValueError(f"Unknown weight initialization method: {self.config.z_weight_init_method}")
 
-        self.gamma = nn.Parameter(torch.normal(mean=self.config.gamma_mean, std=self.config.gamma_std, size=(self.num_total,)).abs())
-        self.tau = nn.Parameter(torch.normal(mean=self.config.tau_mean, std=self.config.tau_std, size=(self.num_total,)).abs())
+        # Initialize layer-wise parameters
+        if self.config.enforce_layer_uniformity_in_gamma:
+            self.layer_gamma = self._initialize_layer_parameters(
+                mean=self.config.gamma_mean,
+                std=self.config.gamma_std
+            )
+            self.gamma = nn.Parameter(self._expand_layer_parameters(self.layer_gamma))
+        else:
+            self.gamma = nn.Parameter(torch.normal(
+                mean=self.config.gamma_mean,
+                std=self.config.gamma_std,
+                size=(self.num_total,)
+            ).abs())
 
-        # Reset PyTorch's seed back to 42 for consistency with the rest of the code
+        if self.config.enforce_layer_uniformity_in_tau:
+            self.layer_tau = self._initialize_layer_parameters(
+                mean=self.config.tau_mean,
+                std=self.config.tau_std
+            )
+            self.tau = nn.Parameter(self._expand_layer_parameters(self.layer_tau))
+        else:
+            self.tau = nn.Parameter(torch.normal(
+                mean=self.config.tau_mean,
+                std=self.config.tau_std,
+                size=(self.num_total,)
+            ).abs())
+
         torch.manual_seed(42)
 
         self.flux_offset = nn.Parameter(torch.zeros(self.num_total))
+        self.flux_offset_Z = nn.Parameter(torch.zeros(self.num_total))
+        # Register phi_hidden as a buffer instead of a Parameter since it's not learnable
+        self.register_buffer('phi_hidden', None)
         self.i_b = torch.tensor(1.7)
 
         self._apply_mask_to_parameters()
         self._set_parameter_gradients()
         
 
+    def _initialize_layer_parameters(self, mean, std):
+        """
+        Initialize parameters for each layer (one value per layer).
+        Returns a parameter tensor with shape (num_layers,).
+        """
+        num_layers = 2 + len(self.num_hidden)  # input + hidden layers + output
+        return nn.Parameter(torch.normal(mean=mean, std=std, size=(num_layers,)).abs())
 
+    def _expand_layer_parameters(self, layer_params):
+        """
+        Expands layer-wise parameters to match the full network size.
+        """
+        expanded = []
+        expanded.extend([layer_params[0]] * self.num_input)  # Input layer
+        for i, hidden_size in enumerate(self.num_hidden):
+            expanded.extend([layer_params[i + 1]] * hidden_size)  # Hidden layers
+        expanded.extend([layer_params[-1]] * self.num_output)  # Output layer
+        return torch.tensor(expanded)
 
+    def forward(self, x, initial_state=None, return_intermediates=False):
+        # Update gamma and tau if using layer uniformity
+        if self.config.enforce_layer_uniformity_in_gamma:
+            self.gamma.data = self._expand_layer_parameters(self.layer_gamma)
+        if self.config.enforce_layer_uniformity_in_tau:
+            self.tau.data = self._expand_layer_parameters(self.layer_tau)
+        
+        return super().forward(x, initial_state, return_intermediates)
 
-    
+    def _set_parameter_gradients(self):
+        # Remove i_b from this list since it's a buffer, not a learnable parameter
+        for param_name in ['J', 'JZ', 'gamma', 'tau', 'flux_offset', 'flux_offset_Z']:
+            param = getattr(self, param_name)
+            if param_name in self.config.learnable_params:
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
+
     def _initialise_glorot_weights(self):
         """
         Initialise weights using Glorot (Xavier) initialisation.
@@ -358,26 +430,38 @@ class SOENModel(nn.Module):
 
     def _apply_mask_to_parameters(self):
         self.J.data *= self.mask
+        self.JZ.data *= self.mask
+        
+        # Apply zero mask to JZ if enforce_Z_disabled is True
+        if self.config.enforce_Z_disabled:
+            self.JZ.data.zero_()
+        
         if self.enforce_symmetric_weights:
             self.J.data = (self.J.data + self.J.data.t()) / 2
-        self.register_buffer('external_flux', torch.zeros(self.num_total)) # a register buffer is a tensor that is not a parameter (so not learnable) but is part of the model state
+            self.JZ.data = (self.JZ.data + self.JZ.data.t()) / 2
+        
+        # Initialize external_flux as a 2D tensor with shape [1, num_total] so it can be broadcast across batches
+        self.register_buffer('external_flux', torch.zeros(self.num_total))
+
 
     def _set_parameter_gradients(self):
-        for param_name in ['J', 'gamma', 'tau', 'flux_offset', 'i_b']:
+        
+        for param_name in ['J', 'JZ', 'gamma', 'tau', 'flux_offset', 'flux_offset_Z']:
             param = getattr(self, param_name)
             if param_name in self.config.learnable_params:
                 param.requires_grad = True
             else:
+                # print(f"Setting {param_name} to not require gradient")
                 param.requires_grad = False
         
     def enforce_symmetry(self, J=None):
         '''
         This method makes sure that if we want the weights to remain symmetric, they do.
-        It is done by making sure the transpose of the weight matrix is the same as the weight matrix,
-        and takes the average of the two.
+        Handles both J and JZ matrices.
         '''
         if J is None:
             J = self.J.data
+        
         if self.enforce_symmetric_weights:
             J_before = J.clone()
             J = (J + J.t()) / 2 
@@ -395,6 +479,7 @@ class SOENModel(nn.Module):
                 self.tau.data = self.tau.data.abs()
                 self.tau.data = torch.clamp(self.tau.data, 0.0001, 10.0) # we dont want to divide by zero (in the s/tau calc)
             self.flux_offset.data = torch.clamp(self.flux_offset.data, -0.5, 0.5) # there is no need for the flux offset to be outside of this range because it is periodic
+            self.flux_offset_Z.data = torch.clamp(self.flux_offset_Z.data, -0.5, 0.5)
         
         return J
 
@@ -417,6 +502,13 @@ class SOENModel(nn.Module):
 
         # place the inputs onto the device
         x = x.to(self.device)
+
+    # Get batch size and initialize phi_hidden for this batch
+        batch_size = x.shape[0]
+        if self.phi_hidden is None or self.phi_hidden.shape[0] != batch_size:
+            self.phi_hidden = torch.zeros(batch_size, self.num_total, device=self.device)
+
+
         # if we provided an input state vector then place it on the device
         if initial_state is not None:
             initial_state = initial_state.to(self.device)
@@ -424,11 +516,16 @@ class SOENModel(nn.Module):
         
 
         self.J.data = self.apply_constraints(self.J.data)
+        self.JZ.data = self.apply_constraints(self.JZ.data)
+
+        # Add this line to enforce JZ being zero when config specifies
+        if self.config.enforce_Z_disabled:
+            self.JZ.data.zero_()
+
         # enforce symmetry on the weights only if active in the config file
         self.enforce_symmetry()
+        self.JZ.data = self.enforce_symmetry(self.JZ.data)
 
-        batch_size = x.shape[0]
-        
         # initialise the state vector
         s = initialise_state(batch_size, self.num_total, initial_state, x.device, self.clip_state)
         
@@ -442,11 +539,10 @@ class SOENModel(nn.Module):
 
         if not self.config.is_input_time_varying and self.input_type == 'state':
                 s[:, input_nodes] = x  # ensure the input states if we're clamping, remain clamped for non-time-varying inputs
-
         
         # intermediates are the states of the network at each time step, useful to save for some ML algos such as trunctated backprop through time 
         intermediates = [s.clone()] if return_intermediates else None
-        
+        # print(f"Intermediates shape: {intermediates[-1].shape}")
         if self.track_state_evolution:
             self.state_evolution = [s.clone()]
         
@@ -455,8 +551,8 @@ class SOENModel(nn.Module):
         
         # we need to make sure connections dont just start being formed if we're learning J. So multiply J by the binary connection mask
         J_masked = self.J * self.mask
+        JZ_masked = self.JZ * self.mask
         
-
         # right, now that everything is set up, we can start the simulation:
         #######################################
         #         MAIN SIMULATION LOOP        #
@@ -464,6 +560,7 @@ class SOENModel(nn.Module):
         for t in range(self.max_iter-1):
             # make a copy of the state vector
             s_old = s.clone()
+            phi_old = self.phi_hidden.detach()
             
             # Apply input if the input is flux
             external_flux = apply_input(s, x, input_nodes, self.input_type, self.config.is_input_time_varying, t)
@@ -471,11 +568,17 @@ class SOENModel(nn.Module):
             # calculate the phi values of every node and over the batch
             phi = calculate_phi(s, J_masked, self.flux_offset, external_flux)
 
+            phi_z = calculate_phi_z(s, JZ_masked, self.flux_offset_Z, external_flux)
+
             if self.clip_phi:
                 phi = torch.clamp(phi, -0.5, 0.5)
             
-            # apply the noise to the flux (phi)values
-            phi = apply_noise(phi, self.train_noise_std if self.training else self.test_noise_std, self.training)
+            phi_hidden_new = (1-phi_z)*phi_old + phi_z*phi
+            
+            # apply the noise to the flux (phi) values
+            phi = apply_noise(phi_hidden_new, self.train_noise_std if self.training else self.test_noise_std, self.training)
+
+            self.phi_hidden = phi_hidden_new.clone()
 
             # update the state according to the main ds/dt equation
             s = update_state(s, phi, self.g, self.gamma, self.tau, self.dt, self.clip_state)
@@ -483,24 +586,33 @@ class SOENModel(nn.Module):
             if not self.config.is_input_time_varying and self.input_type == 'state':
                 s[:, input_nodes] = x  # ensure the input states if we're clamping, remain clamped for non-time-varying inputs
 
+
             # Track energy and state evolution
             self._track_evolution(s, phi)
             
             if return_intermediates:
                 intermediates.append(s.clone())
-            
+            # print(f"Intermediates shape: {intermediates[-1].shape}")
+            print(f"mean of jz: {JZ_masked.mean()}")
             if self.config.run_to_equilibrium and check_convergence(s, s_old, self.tol):
                 break
 
         self.enforce_symmetry()
         self.apply_constraints()
 
+        output = s[:, -self.num_output:]
+        # Add shape validation
+        if output.dim() != 2:
+            raise ValueError(f"Expected output to be 2D tensor with shape [batch_size, num_output], "
+                           f"but got shape {list(output.shape)}")
+        
         if return_intermediates:
-            return s[:, -self.num_output:], intermediates
+            return output, intermediates
         else:
-            return s[:, -self.num_output:]
+            return output
 
     def _check_input_shape(self, x):
+
         if self.config.is_input_time_varying:
             expected_shape = (self.num_output if self.config.input_signal_to_output_nodes else self.num_input)
             if len(x.shape) != 3 or x.shape[1] != expected_shape:
@@ -598,7 +710,40 @@ class SOENModel(nn.Module):
         """
         flux_offset = self.find_initial_flux_offset()
         self.flux_offset.data.fill_(flux_offset)
+        self.flux_offset_Z.data.fill_(flux_offset)
         
+
+    def prune_connections(self, fraction_to_remove):
+        """
+        Removes a fraction of existing connections with the lowest absolute weight values.
+        
+        Args:
+            fraction_to_remove (float): Fraction of existing connections to remove (between 0 and 1)
+        """
+        with torch.no_grad():
+            # Get absolute weights where connections exist
+            existing_weights = self.J.data[self.mask == 1]
+            abs_weights = torch.abs(existing_weights)
+            
+            # Calculate threshold value
+            num_connections = len(existing_weights)
+            num_to_remove = int(num_connections * fraction_to_remove)
+            if num_to_remove == 0:
+                return
+            
+            threshold = torch.sort(abs_weights)[0][num_to_remove]
+            
+            # Create new mask removing connections below threshold
+            new_mask = self.mask.clone()
+            new_mask[torch.abs(self.J.data) <= threshold] = 0
+            # Update mask and weights
+            self.mask = new_mask
+            self.J.data *= self.mask
+            self.JZ.data *= self.mask
+            
+            # Re-enforce symmetry if needed
+            if self.enforce_symmetric_weights:
+                self.enforce_symmetry()
 
 
 

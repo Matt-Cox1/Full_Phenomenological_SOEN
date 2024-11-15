@@ -3,6 +3,7 @@
 import torch
 from typing import Dict, Any
 import shutil
+import numpy as np
 
 def format_number(num: float) -> str:
     if num >= 1e6:
@@ -13,6 +14,7 @@ def format_number(num: float) -> str:
         return f"{num:.2f}"
 
 def analyse_network_structure(model: Any) -> Dict[str, int]:
+    print("Analysing network structure")
     return {
         "input_nodes": model.num_input,
         "hidden_nodes": model.total_hidden,
@@ -23,16 +25,18 @@ def analyse_network_structure(model: Any) -> Dict[str, int]:
     }
 
 def analyse_parameters(model: Any) -> Dict[str, Any]:
+    print("Analysing parameters")
     total_params = sum(p.numel() for p in model.parameters())
     non_zero_mask = torch.sum(model.mask).item()
-    non_zero_weights = torch.sum(model.J * model.mask != 0).item()
+    non_zero_weights_J = torch.sum(model.J * model.mask != 0).item()
+    non_zero_weights_JZ = torch.sum(model.JZ * model.mask != 0).item()
 
     params_info = {}
     for name, param in model.named_parameters():
-        if name == 'J':
+        if name in ['J', 'JZ']:
             params_info[name] = {
                 "shape": tuple(param.shape),
-                "non_zero_elements": format_number(non_zero_weights)
+                "non_zero_elements": format_number(torch.sum(param * model.mask != 0).item())
             }
         else:
             params_info[name] = {
@@ -44,20 +48,46 @@ def analyse_parameters(model: Any) -> Dict[str, Any]:
         "params_info": params_info,
         "total_params": total_params,
         "non_zero_mask": non_zero_mask,
-        "non_zero_weights": non_zero_weights
+        "non_zero_weights_J": non_zero_weights_J,
+        "non_zero_weights_JZ": non_zero_weights_JZ
     }
 
 def analyse_weight_matrix(model: Any) -> Dict[str, Any]:
-    non_zero_weights = torch.sum(model.J * model.mask != 0).item()
-    sparsity = 1 - (non_zero_weights / model.J.numel())
+    print("Analysing weight matrix")
+    # Analyze J matrix
+    weights_J = model.J.detach().cpu().numpy()
+    mask = model.mask.detach().cpu().numpy()
+    masked_weights_J = weights_J * mask
+    
+    # Analyze JZ matrix
+    weights_JZ = model.JZ.detach().cpu().numpy()
+    masked_weights_JZ = weights_JZ * mask
+    
+    # Calculate statistics for both matrices
+    non_zero_J = np.sum(masked_weights_J != 0)
+    non_zero_JZ = np.sum(masked_weights_JZ != 0)
+    sparsity_J = 1 - (non_zero_J / weights_J.size)
+    sparsity_JZ = 1 - (non_zero_JZ / weights_JZ.size)
+    print(f"Mean of J: {masked_weights_J.mean()}")
+    print(f"Mean of JZ: {masked_weights_JZ.mean()}")
     return {
-        "shape": tuple(model.J.shape),
-        "non_zero": non_zero_weights,  # Store as a number, not a formatted string
-        "sparsity": sparsity
+        "J_matrix": {
+            "shape": tuple(model.J.shape),
+            "non_zero": non_zero_J,
+            "sparsity": sparsity_J,
+            "weights": masked_weights_J
+        },
+        "JZ_matrix": {
+            "shape": tuple(model.JZ.shape),
+            "non_zero": non_zero_JZ,
+            "sparsity": sparsity_JZ,
+            "weights": masked_weights_JZ
+        }
     }
 
 
 def analyse_overall_statistics(model: Any) -> Dict[str, Any]:
+    print("Analysing overall statistics")
     total_possible = model.num_total * model.num_total
     non_zero_weights = torch.sum(model.J * model.mask != 0).item()
     sparsity = 1 - (non_zero_weights / model.J.numel())
@@ -68,6 +98,7 @@ def analyse_overall_statistics(model: Any) -> Dict[str, Any]:
     }
 
 def analyse_connection_distribution(model: Any) -> Dict[str, Any]:
+    print("Analysing connection distribution")
     connections_per_node = torch.sum(model.mask, dim=1)
     return {
         "mean_connections": connections_per_node.float().mean().item(),
@@ -75,6 +106,7 @@ def analyse_connection_distribution(model: Any) -> Dict[str, Any]:
     }
 
 def analyse_parameter_statistics(model: Any) -> Dict[str, Dict[str, float]]:
+    print("Analysing parameter statistics")
     param_stats = {}
     for name, param in model.named_parameters():
         if param.requires_grad:
@@ -86,6 +118,7 @@ def analyse_parameter_statistics(model: Any) -> Dict[str, Dict[str, float]]:
 
 
 def analyse_node_connections(model: Any) -> Dict[str, Any]:
+    print("Analysing node connections")
     connections_per_node = torch.sum(model.mask, dim=1)
     
     # Get layer start indices from the model
@@ -190,18 +223,23 @@ def print_analysis(analysis: Dict[str, Any], verbosity_level: int = 3) -> None:
         content = ""
         for name, info in analysis["parameters"]["params_info"].items():
             content += f"{name:12} Shape {str(info['shape']):15} "
-            content += f"{'Non-zero elements' if name == 'J' else 'Elements':20} {info['non_zero_elements' if name == 'J' else 'elements']:>10}\n"
-        content += f"\nTotal Parameters:        {analysis['parameters']['total_params']:,}\n"
-        content += f"Non-zero Mask:           {analysis['parameters']['non_zero_mask']:,}\n"
-        content += f"Non-zero Weights:        {analysis['parameters']['non_zero_weights']:,}"
+            if name in ['J', 'JZ']:
+                content += f"Non-zero elements: {info['non_zero_elements']}\n"
+            else:
+                content += f"Elements: {info['elements']}\n"
+        content += f"\nTotal Parameters:        {analysis['parameters']['total_params']}\n"
+        content += f"Non-zero Mask:           {analysis['parameters']['non_zero_mask']}\n"
+        content += f"Non-zero Weights:        {analysis['parameters']['non_zero_weights_J']}"
         print_section("Parameters", content)
 
     if verbosity_level >= 3:
         if "weight_matrix" in analysis:
             wm = analysis["weight_matrix"]
-            content = f"Shape:                {wm['shape']}\n"
-            content += f"Non-zero Elements:    {format_number(wm['non_zero'])}\n"
-            content += f"Sparsity:             {wm['sparsity']*100:.2f}%"
+            # Access J_matrix data since that's what we're primarily interested in
+            j_matrix = wm["J_matrix"]
+            content = f"Shape:                {j_matrix['shape']}\n"
+            content += f"Non-zero Elements:    {j_matrix['non_zero']}\n"
+            content += f"Sparsity:             {j_matrix['sparsity']*100:.2f}%"
             print_section("Weight Matrix Analysis", content)
 
         if "overall_statistics" in analysis:
@@ -229,6 +267,7 @@ def print_analysis(analysis: Dict[str, Any], verbosity_level: int = 3) -> None:
 
 
 def format_network_analysis(analysis: Dict[str, Any]) -> str:
+    print("Formatting network analysis")
     def format_section(title, content):
         section = f"\n{'─' * 80}\n"
         section += f"  {title.upper()}\n"
@@ -271,17 +310,22 @@ def format_network_analysis(analysis: Dict[str, Any]) -> str:
         content = ""
         for name, info in analysis["parameters"]["params_info"].items():
             content += f"{name:12} Shape {str(info['shape']):15} "
-            content += f"{'Non-zero elements' if name == 'J' else 'Elements':20} {info['non_zero_elements' if name == 'J' else 'elements']}\n"
+            if name in ['J', 'JZ']:
+                content += f"Non-zero elements: {info['non_zero_elements']}\n"
+            else:
+                content += f"Elements: {info['elements']}\n"
         content += f"\nTotal Parameters:        {analysis['parameters']['total_params']}\n"
         content += f"Non-zero Mask:           {analysis['parameters']['non_zero_mask']}\n"
-        content += f"Non-zero Weights:        {analysis['parameters']['non_zero_weights']}"
+        content += f"Non-zero Weights:        {analysis['parameters']['non_zero_weights_J']}"
         formatted_text += format_section("Parameters", content)
 
     if "weight_matrix" in analysis:
         wm = analysis["weight_matrix"]
-        content = f"Shape:                {wm['shape']}\n"
-        content += f"Non-zero Elements:    {wm['non_zero']}\n"
-        content += f"Sparsity:             {wm['sparsity']*100:.2f}%"
+        # Access J_matrix data since that's what we're primarily interested in
+        j_matrix = wm["J_matrix"]
+        content = f"Shape:                {j_matrix['shape']}\n"
+        content += f"Non-zero Elements:    {j_matrix['non_zero']}\n"
+        content += f"Sparsity:             {j_matrix['sparsity']*100:.2f}%"
         formatted_text += format_section("Weight Matrix Analysis", content)
 
     if "overall_statistics" in analysis:
@@ -311,6 +355,7 @@ def format_network_analysis(analysis: Dict[str, Any]) -> str:
     return formatted_text
 
 def analyse_network(model: Any, verbosity_level: int = 3) -> Dict[str, Any]:
+    print("Analysing network")
     analysis = {}
     
     if verbosity_level >= 1:

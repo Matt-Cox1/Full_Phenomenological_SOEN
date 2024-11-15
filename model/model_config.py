@@ -17,29 +17,31 @@ class SOENConfig:
     # Network structure
     num_input: int = 1
     num_hidden: List[int] = field(default_factory=lambda: [1])  # List of hidden layer sizes
+    num_hidden_layers: int = 1
     num_output: int = 1
     input_type: str = "state"  # 'state' or 'flux'
     is_input_time_varying: bool = False
     input_signal_to_output_nodes: bool = False # should always be false unless we want to feed the input into the output nodes instead of the input nodes
 
+    batch_size: int = 64
     # Simulation parameters
-    dt: float = 0.05
-    max_iter: int = 5
+    dt: float = 0.025
+    max_iter: int = 40
     tol: float = 1e-5
     run_to_equilibrium: bool = False  
     track_state_evolution: bool = False
     track_energy: bool = False
     device: torch.device = torch.device("cuda")# the method of device allocation could be improved
 
-    # Initialisation parameters
     # Weight initialisation method
-    weight_init_method: Literal["normal","glorot"] = "normal"
+    weight_init_method: Literal["normal","glorot"] = "glorot"
+    z_weight_init_method: Literal["normal","glorot"] = "glorot"
     # Connection mask distribution
-    mask_distribution: Literal["bernoulli","power_law"] = 'bernoulli' 
+    mask_distribution: Literal["bernoulli","power_law_except_self"] = 'bernoulli' 
 
-
-
+    # only_self_connections_in_hidden: bool = True # only allow self connections in the hidden layer
     init_scale: float = 0.1
+    z_init_scale: float = 0.3
     enforce_symmetric_weights: bool = False
     bias_flux_offsets: bool = False
 
@@ -48,9 +50,16 @@ class SOENConfig:
     gamma_std: float = 0.5
     tau_mean: float = 1.0
     tau_std: float = 0.5
-
-  
-
+    layer_gamma_mean: float = 1.0
+    layer_gamma_std: float = 0.8
+    layer_tau_mean: float = 1.0
+    layer_tau_std: float = 0.8
+    #layer parameter uniformity options
+    #if these are true, the respective parameter is the same value in all nodes of a given layer, but can be different between layers
+    #the purpose is to encourage different layers to achieve unique dynamics
+    enforce_layer_uniformity_in_gamma: bool = False
+    enforce_layer_uniformity_in_tau: bool = False
+    enforce_Z_disabled: bool = True
     enforce_non_negativity_in_gamma: bool = True
     enforce_non_negativity_in_tau: bool = True
 
@@ -59,8 +68,9 @@ class SOENConfig:
     p_output_output: float = 1.0
 
     p_input_hidden: float =1.0 # equal to the prob of connecting a hidden to input node if allow_hidden_to_input_feedback=True
-    p_hidden_self: float = 1.0 # prob of a hidden node connecting to itself (like in a RNN)
+    p_hidden_self: float = 0 # prob of a hidden node connecting to itself (like in a RNN)
     p_hidden_hidden: float = 1.0 # prob of connecting to a different hidden node in the same layer
+    p_hidden_output: float = 1.0
     
     # p_inter_hidden: List[int] = field(default_factory=lambda:[1.0]) #when there is more than one hidden layer, this defines forward connection probabilities from successive hidden layers to the next one
     p_inter_hidden: float = 1.0 #when there is more than one hidden layer, this defines forward connection probabilities from successive hidden layers to the next one
@@ -78,10 +88,9 @@ class SOENConfig:
     # Flux noise parameters
     train_noise_std: float = 0.00
     test_noise_std: float = 0.00
-
     # Learning parameters
     # TO DO: Add bias current as a learnable parameter
-    learnable_params: List[str] = field(default_factory=lambda: ["J", "gamma", "tau", "flux_offset"])
+    learnable_params: List[str] = field(default_factory=lambda: ["J", "JZ","gamma", "tau", "flux_offset", "flux_offset_Z"])
 
 
     # Parameter constraints

@@ -33,15 +33,21 @@ class SpokenDigitTrainingTab(QWidget):
     def __init__(self, model, train_loader, val_loader):
         super().__init__()
         self.model = model
+        self.pruning_fraction = 0.1
         
-        # Use the provided loaders instead of loading new ones
+         # Use the provided loaders instead of loading new ones
         self.train_loader = train_loader
         self.val_loader = val_loader
         
         # Print data shapes
         train_data = next(iter(self.train_loader))[0]  # Get first batch of training data
+
         val_data = next(iter(self.val_loader))[0]      # Get first batch of validation data
+
+
+
         logging.info(f"Training data shape: {train_data.shape}")
+
         logging.info(f"Validation data shape: {val_data.shape}")
         
         self.learnable_param_checkboxes = {}
@@ -126,6 +132,10 @@ class SpokenDigitTrainingTab(QWidget):
         self.reset_button = QPushButton("Reset Model")
         self.reset_button.clicked.connect(self.reset_model)
         layout.addWidget(self.reset_button)
+
+        self.prune_button = QPushButton("Prune Connections")
+        self.prune_button.clicked.connect(self.prune_connections)
+        layout.addWidget(self.prune_button)
 
 
     def reset_model(self):
@@ -218,6 +228,7 @@ class SpokenDigitTrainingTab(QWidget):
         self.setup_spinbox(layout, "Test Noise:", DEFAULT_TEST_NOISE, 0.0, 10.0, 6, self.update_test_noise)
         self.setup_spinbox(layout, "Max Iterations:", DEFAULT_MAX_ITER, 1, 1000, 0, self.update_max_iter, is_int=True)
         self.setup_spinbox(layout, "Epochs:", 10, 1, 1000, 0, self.update_epochs, is_int=True)
+        self.setup_spinbox(layout, "Pruning Fraction:", 0.1, 0.0, 1.0, 2, self.update_pruning_fraction)
         
     def download_training_progress(self):
         if hasattr(self, 'training_thread'):
@@ -455,6 +466,8 @@ class SpokenDigitTrainingTab(QWidget):
             try:
                 loaded_model = load_soen_model(file_path, SOENModel)
 
+                
+
                 # Update the model
                 self.model = loaded_model
                 logging.info(f"Model loaded from {file_path}")
@@ -539,16 +552,18 @@ class SpokenDigitTrainingTab(QWidget):
 
     def setup_training_thread(self, epochs=None):
         self.training_thread = AudioTrainingThread(self.model, self.train_loader, self.val_loader)
+        
+
+        
         self.training_thread.update_signal.connect(self.update_plots)
         self.training_thread.error_signal.connect(self.show_error_message)
         self.training_thread.no_params_signal.connect(self.handle_no_params)
         self.training_thread.finished.connect(self.on_training_finished)
         self.training_thread.state_changed.connect(self.on_training_state_changed)
         
-        # If epochs is provided, set it in the new training thread
         if epochs is not None:
             self.training_thread.epochs = epochs
-    
+
     @pyqtSlot(str)
     def log_message(self, message):
         self.text_info.append(message)
@@ -614,8 +629,13 @@ class SpokenDigitTrainingTab(QWidget):
         analysis = analyse_network(self.model, verbosity_level=3)
         analysis_text = self.format_network_analysis(analysis)
         self.network_analysis_text.setPlainText(analysis_text)
+        print("Updated network analysis")
 
     def format_network_analysis(self, analysis):
+        logging.debug("Analysis keys: %s", analysis.keys())
+        if "weight_matrix" in analysis:
+            logging.debug("Weight matrix keys: %s", analysis["weight_matrix"].keys())
+
         def format_param_stats(param_stats):
             content = "Parameter   |   Mean   |   Std Dev\n"
             content += "────────────┼──────────┼───────────\n"
@@ -670,6 +690,31 @@ class SpokenDigitTrainingTab(QWidget):
                 content += f"{conn} | {count} | {bar}\n"
             return content
 
+        def format_weight_histogram(weights, bins=20):
+            """Format a text-based histogram of weight values."""
+            if not isinstance(weights, np.ndarray) or len(weights) == 0:
+                return "No weight data available for histogram."
+            
+            # Calculate histogram data
+            hist, bin_edges = np.histogram(weights, bins=bins)
+            max_count = max(hist)
+            bar_width = 50  # Maximum width of the histogram bars
+            
+            # Format the histogram
+            content = "Weight Distribution Histogram\n"
+            content += "Weight Range         | Count     | Distribution\n"
+            content += "───────────────────┼───────────┼" + "─" * (bar_width + 1) + "\n"
+            
+            for i in range(len(hist)):
+                start = f"{bin_edges[i]:6.3f}"
+                end = f"{bin_edges[i+1]:6.3f}"
+                count = hist[i]
+                bar_length = int((count / max_count) * bar_width)
+                bar = "█" * bar_length
+                content += f"{start} to {end} | {count:9d} | {bar}\n"
+            
+            return content
+
         formatted_text = "SOEN Network Analysis\n"
         formatted_text += "=" * 80 + "\n\n"
 
@@ -690,20 +735,29 @@ class SpokenDigitTrainingTab(QWidget):
             content = ""
             for name, info in analysis["parameters"]["params_info"].items():
                 content += f"{name:12} Shape {str(info['shape']):15} "
-                value = info['non_zero_elements' if name == 'J' else 'elements']
-                content += f"{'Non-zero elements' if name == 'J' else 'Elements':20} {parse_value(value):,}\n"
-            content += f"\nTotal Parameters:        {parse_value(analysis['parameters']['total_params']):,}\n"
-            content += f"Non-zero Mask:           {parse_value(analysis['parameters']['non_zero_mask']):,}\n"
-            content += f"Non-zero Weights:        {parse_value(analysis['parameters']['non_zero_weights']):,}"
+                if name in ['J', 'JZ']:  # Updated to include JZ
+                    value = info.get('non_zero_elements', 0)
+                    content += f"Non-zero elements: {parse_value(value):,}\n"
+                else:
+                    value = info.get('elements', 0)
+                    content += f"Elements: {parse_value(value):,}\n"
+            content += f"\nTotal Parameters:        {parse_value(analysis['parameters'].get('total_params', 0)):,}\n"
+            content += f"Non-zero Mask:           {parse_value(analysis['parameters'].get('non_zero_mask', 0)):,}\n"
+            content += f"Non-zero Weights J:      {parse_value(analysis['parameters'].get('non_zero_weights_J', 0)):,}\n"  # Updated to specify J
+            content += f"Non-zero Weights JZ:     {parse_value(analysis['parameters'].get('non_zero_weights_JZ', 0)):,}"   # Added JZ count
             formatted_text += format_section("Parameters", content)
 
         if "weight_matrix" in analysis:
-            wm = analysis["weight_matrix"]
-            # Add type checking for sparsity
-            sparsity = f"{wm['sparsity']*100:.2f}" if isinstance(wm['sparsity'], (int, float)) else str(wm['sparsity'])
-            content = f"Shape:                {wm['shape']}\n"
-            content += f"Non-zero Elements:    {parse_value(wm['non_zero']):,}\n"
-            content += f"Sparsity:             {sparsity}%"
+            # Update to handle both J and JZ matrices
+            j_matrix = analysis["weight_matrix"]["J_matrix"]
+            jz_matrix = analysis["weight_matrix"]["JZ_matrix"]
+            
+            content = f"J Matrix Shape:          {j_matrix['shape']}\n"
+            content += f"J Non-zero Elements:     {parse_value(j_matrix['non_zero']):,}\n"
+            content += f"J Sparsity:             {j_matrix['sparsity']*100:.2f}%\n\n"
+            content += f"JZ Matrix Shape:         {jz_matrix['shape']}\n"
+            content += f"JZ Non-zero Elements:    {parse_value(jz_matrix['non_zero']):,}\n"
+            content += f"JZ Sparsity:            {jz_matrix['sparsity']*100:.2f}%"
             formatted_text += format_section("Weight Matrix Analysis", content)
 
         if "overall_statistics" in analysis:
@@ -734,7 +788,45 @@ class SpokenDigitTrainingTab(QWidget):
             formatted_text += format_section("Output Node Connectivity Distribution", 
                                             format_distribution(analysis["output_node_connections"]))
 
+        # Update weight histogram section to handle both matrices
+        if "weight_matrix" in analysis:
+            j_weights = analysis["weight_matrix"]["J_matrix"]["weights"]
+            jz_weights = analysis["weight_matrix"]["JZ_matrix"]["weights"]
+            
+            if isinstance(j_weights, np.ndarray) and isinstance(jz_weights, np.ndarray):
+                # Filter out zero weights for both matrices
+                non_zero_j = j_weights[j_weights != 0]
+                non_zero_jz = jz_weights[jz_weights != 0]
+                
+                formatted_text += format_section("J Weight Distribution", 
+                                              format_weight_histogram(non_zero_j))
+                formatted_text += format_section("JZ Weight Distribution", 
+                                              format_weight_histogram(non_zero_jz))
+            else:
+                formatted_text += format_section("Weight Distribution", "No weight data available for histogram.")
+
         return formatted_text
+
+    @pyqtSlot(float)
+    def update_pruning_fraction(self, value):
+        self.pruning_fraction = value
+
+    def prune_connections(self):
+        if self.training_thread.isRunning():
+            QMessageBox.warning(self, "Warning", "Please stop training before pruning connections.")
+            return
+        
+        reply = QMessageBox.question(self, 'Confirm Pruning', 
+                                   f'Are you sure you want to prune {self.pruning_fraction * 100}% of connections?',
+                                   QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            try:
+                self.model.prune_connections(self.pruning_fraction)
+                self.perform_network_analysis()  # Update network analysis after pruning
+                QMessageBox.information(self, "Success", "Connections pruned successfully!")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to prune connections: {str(e)}")
 
 
 

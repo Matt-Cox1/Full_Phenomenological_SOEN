@@ -16,15 +16,16 @@ import torch
 class SpokenDigitRNNConfig:
     # Network structure
     num_input: int = 32
-    num_hidden: List[int] = field(default_factory=lambda: [64,32,32])  # List of hidden layer sizes
+    num_hidden: List[int] = field(default_factory=lambda: [64])  # List of hidden layer sizes
     num_output: int = 10
     input_type: str = "state"
     is_input_time_varying: bool = True
     input_signal_to_output_nodes: bool = False # should always be false unless we want to clamp the output nodes instead (experimental)
 
+    batch_size: int = 64
     # Simulation parameters
-    dt: float = .01
-    max_iter: int = 100
+    dt: float = .025
+    max_iter: int = 40
     tol: float = 1e-6
     run_to_equilibrium: bool = False  
     track_state_evolution: bool = True
@@ -33,19 +34,25 @@ class SpokenDigitRNNConfig:
 
     # Weight initialisation method
     weight_init_method: Literal["normal","glorot"] = "glorot"
+    z_weight_init_method: Literal["normal","glorot"] = "normal"
     # Connection mask distribution
     mask_distribution: Literal["bernoulli","power_law_except_self"] = 'bernoulli' 
 
-    only_self_connections_in_hidden: bool = True # only allow self connections in the hidden layer
+    # only_self_connections_in_hidden: bool = True # only allow self connections in the hidden layer
     init_scale: float = 0.1
+    z_init_scale: float = 0.3
     enforce_symmetric_weights: bool = False
     bias_flux_offsets: bool = True
 
     # Node parameters
     gamma_mean: float = 1.0
-    gamma_std: float = 0.5
+    gamma_std: float = 0.8
     tau_mean: float = 1.0
-    tau_std: float = 0.5
+    tau_std: float = 0.8
+    layer_gamma_mean: float = 1.0
+    layer_gamma_std: float = 0.8
+    layer_tau_mean: float = 1.0
+    layer_tau_std: float = 0.8
 
     # Connection probabilities
     p_input_hidden: float = 1.0
@@ -65,13 +72,18 @@ class SpokenDigitRNNConfig:
     train_noise_std: float = 0.0
     test_noise_std: float = 0.0
 
+    enforce_layer_uniformity_in_gamma: bool = False
+    enforce_layer_uniformity_in_tau: bool = False
+
+    enforce_Z_disabled: bool = False
+
+
+
     enforce_non_negativity_in_gamma: bool = True
     enforce_non_negativity_in_tau: bool = True
 
     # Learning parameters
-    learnable_params: List[str] = field(default_factory=lambda: ["J", "gamma", "tau", "flux_offset"])
-
-
+    learnable_params: List[str] = field(default_factory=lambda: ["J", "JZ","gamma", "tau", "flux_offset", "flux_offset_Z"])
     # Activation function parameters
     clip_phi: bool = True
     clip_state: bool = True 

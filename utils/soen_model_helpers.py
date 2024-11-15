@@ -21,8 +21,10 @@ def update_state(s, phi, g, gamma, tau, dt, clip_state):
         s = s + dt * ds
     return s
 
-# def update_state_minGRU(s, phi, g, gamma, tau, dt, clip_state, ):
-#     g_value = g(phi, s)
+# def update_state_minGRU(s,phi_old, phi,phi_z, g, gamma, tau, dt, clip_state,phi_final ):
+
+#     phi_final = (1-phi_z)*phi_old + phi_z*phi
+#     g_value = g(phi_final, s)
 #     ds = gamma * g_value.detach() + (g_value - g_value.detach()) - s / tau
 #     if clip_state:
 #         s = torch.clamp(s + dt * ds, 0.0, 1)
@@ -190,6 +192,15 @@ def calculate_phi(s, J_masked, flux_offset, external_flux=None):
     phi = torch.mm(s, J_masked) + flux_offset
     if external_flux is not None:
         phi += external_flux
+    return phi
+
+
+#From the auxiliary weight matrix JZ, find phi_z 
+def calculate_phi_z(s, JZ_masked, flux_offset_Z, external_flux=None):
+    phi = torch.mm(s, JZ_masked) + flux_offset_Z
+    if external_flux is not None:
+        phi += external_flux
+    phi=torch.sigmoid(phi)
     return phi
 
 def apply_noise(phi, noise_std, training):

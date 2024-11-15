@@ -39,8 +39,8 @@ class AudioTrainingThread(QThread):
         self.lr = 0.001
         self.train_noise_std = 0.00
         self.test_noise_std = 0.00
-        self.max_iter = 100
-        self.learnable_params = ["J", "tau", "gamma", "flux_offset"]
+        self.max_iter = 40
+        self.learnable_params = ["J","JZ", "tau", "gamma", "flux_offset","flux_offset_Z","layer_tau","layer_gamma"]
         self.epochs = 10
         self.current_epoch = 0
         self.current_batch = 0
@@ -95,6 +95,9 @@ class AudioTrainingThread(QThread):
 
     def train_epoch(self):
         for batch_idx, (data, target) in enumerate(self.train_loader):
+            # Add dimension logging
+            logging.debug(f"Batch input shape: {data.shape}, target shape: {target.shape}")
+            
             data = data.to(self.model.device)
             target = target.to(self.model.device)
             if self._state == TrainingState.PAUSED:
@@ -108,6 +111,16 @@ class AudioTrainingThread(QThread):
             
             self.optimizer.zero_grad()
             output = self.model(data)
+            # Add model output dimension logging
+            logging.debug(f"Model output shape: {output.shape}, expected target shape: {target.shape}")
+            
+            # Add dimension validation check
+            if output.shape != target.shape and output.shape[0] != target.shape[0]:
+                error_msg = f"Dimension mismatch: output shape {output.shape} != target shape {target.shape}"
+                logging.error(error_msg)
+                self.error_signal.emit(error_msg)
+                return
+                
             loss = self.criterion(output, target)
             loss.backward()
             self.optimizer.step()
@@ -131,11 +144,24 @@ class AudioTrainingThread(QThread):
         total = 0
         with torch.no_grad():
             for i, (data, target) in enumerate(self.val_loader):
+                # Add validation dimension logging
+                logging.debug(f"Validation batch {i} - Input shape: {data.shape}, target shape: {target.shape}")
+                
                 data = data.to(self.model.device)
                 target = target.to(self.model.device)
                 if i >= 10:  # Limit validation to 10 batches for speed
                     break
                 output = self.model(data)
+                # Add validation output dimension logging
+                logging.debug(f"Validation output shape: {output.shape}")
+
+                # Add dimension validation check
+                if output.shape != target.shape and output.shape[0] != target.shape[0]:
+                    error_msg = f"Validation dimension mismatch: output shape {output.shape} != target shape {target.shape}"
+                    logging.error(error_msg)
+                    self.error_signal.emit(error_msg)
+                    return float('inf'), 0.0
+
                 val_loss += self.criterion(output, target).item()
                 _, predicted = output.max(1)
                 total += target.size(0)
@@ -146,6 +172,7 @@ class AudioTrainingThread(QThread):
         return val_loss, val_accuracy
 
     def update_model_params(self):
+        # Update model configuration
         self.model.train_noise_std = self.train_noise_std
         self.model.test_noise_std = self.test_noise_std
         self.model.config.max_iter = self.max_iter
@@ -158,18 +185,38 @@ class AudioTrainingThread(QThread):
                              f"max_iter={self.max_iter}, "
                              f"activation={self.activation_function}")
 
-        for name, param in self.model.named_parameters():
-            param.requires_grad = name in self.learnable_params
+        # Handle layer-uniform parameters
+        param_mapping = {
+            'J': self.model.J,  
+            'JZ': self.model.JZ,
+            'gamma': self.model.layer_gamma if self.model.config.enforce_layer_uniformity_in_gamma else self.model.gamma,
+            'tau': self.model.layer_tau if self.model.config.enforce_layer_uniformity_in_tau else self.model.tau,
+            'flux_offset': self.model.flux_offset,
+            'flux_offset_Z': self.model.flux_offset_Z,
+            'i_b': self.model.i_b
+        }
 
-        if not any(p.requires_grad for p in self.model.parameters()):
+        # Set requires_grad based on learnable_params
+        any_params_learnable = False
+        for name, param in param_mapping.items():
+            if isinstance(param, torch.nn.Parameter):
+                is_learnable = name in self.learnable_params
+                param.requires_grad = is_learnable
+                any_params_learnable = any_params_learnable or is_learnable
+
+        # Check if any parameters are learnable
+        if not any_params_learnable:
             self.no_params_signal.emit()
-            self.is_paused = True
+            self.pause()
             return
 
-        self.optimizer = optim.Adam(
-            filter(lambda p: p.requires_grad, self.model.parameters()),
-            lr=self.lr
-        )
+        # Update optimizer only if learning rate has changed
+        if not hasattr(self, '_current_lr') or self._current_lr != self.lr:
+            self._current_lr = self.lr
+            self.optimizer = optim.Adam(
+                filter(lambda p: p.requires_grad, self.model.parameters()),
+                lr=self.lr
+            )
 
     def emit_update(self, epoch, batch_idx, loss, accuracy, val_loss, val_accuracy):
         weight_matrix = self.model.J.detach().cpu().numpy() if self.show_weight_matrix else None

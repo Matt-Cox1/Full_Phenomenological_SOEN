@@ -41,7 +41,7 @@ class TrainingThread(QThread):
         self.lr = 0.001
         self.train_noise_std = 0.05
         self.test_noise_std = 0.05
-        self.max_iter = 10
+        self.max_iter = 100
         self.learnable_params = ["J","tau","gamma","flux_offsets"]
         self.epochs = 10
         self.current_epoch = 0

@@ -88,10 +88,10 @@ def create_mel_spectrogram(waveform, sample_rate, moving_average_params=None, de
         derivative_params (dict, optional): Parameters for normalized derivative
         use_db_scale (bool): Whether to convert to dB scale before processing
     """
-    n_fft = int(sample_rate * 0.02)  # 25ms windows
-    hop_length = int(sample_rate * 0.01)  # 20ms hop length
+    n_fft = int(sample_rate * 0.05)  # 25ms windows
+    hop_length = int(sample_rate * 0.025)  # 20ms hop length
     
-    # Calculate target length for 1 second of audio
+    # Calculate target length for 1 secon212d of audio
     target_length = int(sample_rate / hop_length)  # Number of frames for 1 second
     
     mel_transform = torchaudio.transforms.MelSpectrogram(
